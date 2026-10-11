@@ -9,7 +9,9 @@
  *       | BASS |  X2.0         |  (88,90) 64x64 scope: the tape vortex   |  D5        | BASS |
  *       |      |  FDBK         |  ring, SUB / TREBLE bars                |  ECHO      |      |
  *       | SUB  |  0.60         +-----------------------------------------+  1/8D      | SUB  |
- *       |      |  flags (166): E>R BYP CLK ARM; the punch slot (186, large); MIDI CH, SUB USB |      |
+ *       |      |  flags (166): E>R BYP CLK ARM                                             |      |
+ *       |      |  the lamp row (184..219): THROW FREEZE DRIFT / ROLL SIREN                 |      |
+ *       |      |  MIDI CH, SUB USB (222)                                                   |      |
  *   235 +------+                                                                      +------+
  *
  * Colours are fixed (a steel faceplate: the menu's COLOR does not repaint it); the background is #121212
@@ -18,7 +20,9 @@
  * a killed band's tile turns solid red with an X (dub_ctl.kill | dub_live.kill); the limiter's bar is the gain
  * (dub_tel.lim_gr_q15) on a dB scale; the scope draws the echo as a rotating spiral ring (dub_tel.echo_env),
  * shaken by WOW & FLUTTER (the UI's own LFSR); the border flashes with the siren's LFO (dub_tel.siren_ph)
- * while its gate is open.
+ * while its gate is open. The punch slots are not names on the screen but lamps, engraved in gray, their lenses
+ * lit while the slot is on (pads 5..9, CC 40..44): THROW and FREEZE red, DRIFT (WOW & FLUTTER) and ROLL
+ * (STUTTER) gold, SIREN red, as chassis warning lights.
  *
  * The screen is written only where something changed: every element is its own rectangle, drawn into the
  * canvas and sent when its picture's signature differs from the last one sent (the static faceplate: once, on
@@ -37,8 +41,8 @@
 #define DUB_UI_PLATE RGB(44, 46, 48)           /* the rack's raised panels */
 #define DUB_UI_EDGE RGB(78, 80, 84)            /* their bevels, the rules */
 #define DUB_UI_SILVER RGB(196, 198, 200)       /* engraved labels */
-#define DUB_UI_GRAY RGB(120, 122, 126)
-#define DUB_UI_GOLD RGB(255, 196, 24)          /* values */
+#define DUB_UI_GRAY RGB(110, 110, 118)         /* #6E6E76: engraved labels, the lamps when dark */
+#define DUB_UI_GOLD RGB(250, 188, 0)           /* #FABC00: values, a lamp lit */
 #define DUB_UI_RED RGB(232, 40, 32)
 #define DUB_UI_GREEN RGB(40, 200, 80)
 #define DUB_UI_CABINET RGB(26, 24, 22)         /* the speaker boxes */
@@ -69,9 +73,6 @@ static const uint8_t DUB_UI_DRV_R[DUB_NBAND] = {11, 10, 7, 5};       /* their co
 
 static const char *const DUB_UI_HPF[DUB_TUBBY_NSTEP] = {"FLAT", "70", "100", "150", "250", "500", "1K", "2K",
                                                         "3K", "5K", "7.5K"};
-static const char *const DUB_UI_PUNCH[DUB_NSLOT] = {"KILL SUB", "KILL BASS", "KILL MID", "KILL TREB", "THROW",
-                                                    "FREEZE", "WOW", "STUTTER", "SIREN", "CRASH", "SPINBACK",
-                                                    "TAPE STOP", "FILTER", "BLACK ARK", "CHOP", "DUCK"};
 static const char *const DUB_UI_DLY[NDIV_DLY] = {"1/4", "1/8", "1/16", "1/32", "8T", "16T", "1/8D", "1/16D"};
 static const char *const DUB_UI_NOTE[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
@@ -85,7 +86,7 @@ static struct {
     uint8_t shown;                             /* drawn last frame (ui_draw.c: the page behind is redrawn after) */
     uint8_t page, home;                        /* ui.page / ui.home it was opened on: another page closes it */
     uint32_t last_ms;                          /* the last frame the moving parts were drawn */
-    uint32_t sig_drv[DUB_NBAND], sig_knob, sig_kill, sig_lim, sig_scope, sig_txt[9];
+    uint32_t sig_drv[DUB_NBAND], sig_knob, sig_kill, sig_lim, sig_scope, sig_txt[9], sig_lamp[5];
     uint32_t lfsr;                             /* WOW's wobble on the ring */
     uint32_t rot;                              /* the vortex's turn (1024 a revolution) */
     uint32_t bytes;                            /* sent to the panel by the last frame (tests) */
@@ -372,11 +373,57 @@ static void dub_ui_value(uint32_t slot, uint32_t x, uint32_t y, uint32_t w, cons
     dub_ui_send(x, y);
 }
 
+/* the lamp row (rows 184..219): five engraved plates, gray at rest, each lens lit (an inverted, backlit block) while
+ * its punch slot is on. Five words do not fit one line between the speakers in FONT_S (200 px of text, 176 px of
+ * room), so the plates tile 3 + 2, 58 x 18 each: THROW FREEZE DRIFT / ROLL SIREN. Each is its own rectangle, sent
+ * only when it switches. SIREN also lights when the siren's gate is opened another way (its pad, MIDI). */
+#define DUB_UI_LAMP_X 32
+#define DUB_UI_LAMP_Y 184
+#define DUB_UI_LAMP_W 58
+#define DUB_UI_LAMP_H 18
+#define DUB_UI_NLAMP 5u
+static const struct {
+    const char *name;
+    int8_t slot;                                                /* the punch slot that lights it */
+    uint16_t lit;                                               /* its lens lit */
+    uint8_t x, y;                                               /* where, on the screen */
+} DUB_UI_LAMPS[DUB_UI_NLAMP] = {
+    {"THROW", DUB_PX_ECHO_THROW, RGB(232, 40, 32), DUB_UI_LAMP_X, DUB_UI_LAMP_Y},
+    {"FREEZE", DUB_PX_ECHO_FREEZE, RGB(232, 40, 32), DUB_UI_LAMP_X + DUB_UI_LAMP_W + 1, DUB_UI_LAMP_Y},
+    {"DRIFT", DUB_PX_WOW, RGB(250, 188, 0), DUB_UI_LAMP_X + 2 * (DUB_UI_LAMP_W + 1), DUB_UI_LAMP_Y},
+    {"ROLL", DUB_PX_STUTTER, RGB(250, 188, 0), DUB_UI_LAMP_X + 29, DUB_UI_LAMP_Y + DUB_UI_LAMP_H},
+    {"SIREN", DUB_PX_SIREN, RGB(232, 40, 32), DUB_UI_LAMP_X + 29 + DUB_UI_LAMP_W + 1, DUB_UI_LAMP_Y + DUB_UI_LAMP_H},
+};
+static int dub_ui_lamp_on(uint32_t k)
+{
+    int32_t p = dub_punch_now();
+    return DUB_UI_LAMPS[k].slot == DUB_PX_SIREN ? dub_ui_siren_open() : p == DUB_UI_LAMPS[k].slot;
+}
+static void dub_ui_lamps(int force)
+{
+    uint32_t k;
+    for (k = 0; k < DUB_UI_NLAMP; k++) {
+        int on = dub_ui_lamp_on(k);
+        uint16_t lens = on ? DUB_UI_LAMPS[k].lit : DUB_UI_PLATE, ink = on ? DUB_UI_BG : DUB_UI_GRAY;
+        uint32_t sig = on ? 2u : 1u;
+        if (!force && sig == dub_ui.sig_lamp[k])
+            continue;                                           /* (unchanged: not sent) */
+        dub_ui.sig_lamp[k] = sig;
+        cv_begin(DUB_UI_LAMP_W, DUB_UI_LAMP_H, DUB_UI_BG);
+        cv_rect(0, 0, DUB_UI_LAMP_W, DUB_UI_LAMP_H, DUB_UI_EDGE);   /* the bezel */
+        cv_rect(1, 1, DUB_UI_LAMP_W - 2, DUB_UI_LAMP_H - 2, lens);   /* the lens */
+        cv_rect(0, 0, 1, 1, DUB_UI_BG), cv_rect(DUB_UI_LAMP_W - 1, 0, 1, 1, DUB_UI_BG);   /* (rounded corners) */
+        cv_rect(0, DUB_UI_LAMP_H - 1, 1, 1, DUB_UI_BG), cv_rect(DUB_UI_LAMP_W - 1, DUB_UI_LAMP_H - 1, 1, 1, DUB_UI_BG);
+        dub_ui_text((DUB_UI_LAMP_W - text_w(&FONT_S, DUB_UI_LAMPS[k].name)) / 2, 1, &FONT_S, DUB_UI_LAMPS[k].name,
+                    ink, lens);
+        dub_ui_send(DUB_UI_LAMPS[k].x, DUB_UI_LAMPS[k].y);
+    }
+}
+
 static void dub_ui_values(int force)
 {
     char b[24];
     int32_t v;
-    int8_t p;
     v = dub_ctl.drive_q12;                                      /* X1.0 .. X8.0 */
     b[0] = 'X';
     fmt_fix(b + 1, (v * 10 + 2048) / 4096, 1);
@@ -398,9 +445,7 @@ static void dub_ui_values(int force)
     str_cpy(b + 8, dub_ctl.siren_sync ? "CLK " : "    ", sizeof b - 8);
     str_cpy(b + 12, dub_ctl.sub_arm ? "ARM" : "   ", sizeof b - 12);
     dub_ui_value(4, 36, 166, 168, &FONT_S, b, dub_ctl.bypass ? DUB_UI_RED : DUB_UI_GREEN, force);
-    p = (int8_t)dub_punch_now();                                /* the punch slot, large */
-    dub_ui_value(5, 32, 186, 176, &FONT_L, p >= 0 && p < (int8_t)DUB_NSLOT ? DUB_UI_PUNCH[(uint8_t)p] : "",
-                 DUB_UI_RED, force);
+    dub_ui_lamps(force);                                        /* the punch slots: the lamp row */
     str_cpy(b, "MIDI CH ", sizeof b);
     if (dub_ctl.midi_ch)
         fmt_int(b + str_len(b), dub_ctl.midi_ch);

@@ -8,7 +8,11 @@
  *   parts       the big knob's 11 pointer positions all differ; a killed band's tile turns red with an X; the
  *               limiter's bar shortens with the gain reduction; the strobe follows the siren's LFO while its gate
  *               is open, and is plain when shut; WOW shakes the ring; the knobs set dub_ctl within its ranges
- *   pictures    DIR/tower-*.ppm (idle, playing, everything on) for review
+ *   pictures    DIR/tower-*.ppm (idle, playing, everything on) for review, and the audit set as PNG (and PPM):
+ *               shot-1-idle, shot-2-overdrive (drive x8, every band near full scale), shot-3-limiter (-10 dB of
+ *               gain reduction), shot-4-siren-strobe (the gate open, the LFO at its bright peak), shot-5-wow-spiral
+ *               (the echo loud, WOW & FLUTTER shaking the ring, its DRIFT lamp lit), shot-6-siren-lamp; the lamp row:
+ *               five engraved plates, each lit by its slot alone and sent only when it switches
  * usage: dub_ui_test [DIR] */
 #include <stdint.h>
 #include <assert.h>
@@ -67,6 +71,80 @@ static void ppm(const char *name)
     }
     fclose(f);
 }
+/* the screen as a PNG (8-bit RGB, deflate stored blocks: no zlib), for Finder / Preview */
+static uint32_t crc_tab[256];
+static uint32_t png_crc(uint32_t c, const uint8_t *b, uint32_t n)
+{
+    uint32_t i, k;
+    if (!crc_tab[1])
+        for (i = 0; i < 256u; i++) {
+            uint32_t v = i;
+            for (k = 0; k < 8u; k++)
+                v = v & 1u ? 0xEDB88320u ^ (v >> 1) : v >> 1;
+            crc_tab[i] = v;
+        }
+    for (i = 0; i < n; i++)
+        c = crc_tab[(c ^ b[i]) & 255u] ^ (c >> 8);
+    return c;
+}
+static void be32(uint8_t *b, uint32_t v) { b[0] = (uint8_t)(v >> 24), b[1] = (uint8_t)(v >> 16), b[2] = (uint8_t)(v >> 8), b[3] = (uint8_t)v; }
+static void png_chunk(FILE *f, const char *type, const uint8_t *d, uint32_t n)
+{
+    uint8_t h[8];
+    uint32_t c;
+    be32(h, n);
+    memcpy(h + 4, type, 4);
+    fwrite(h, 1, 8, f);
+    if (n)
+        fwrite(d, 1, n, f);
+    c = png_crc(0xFFFFFFFFu, h + 4, 4);
+    c = png_crc(c, d, n) ^ 0xFFFFFFFFu;
+    be32(h, c);
+    fwrite(h, 1, 4, f);
+}
+static void png(const char *name)
+{
+    static uint8_t raw[240 * (1 + 240 * 3)], z[240 * (1 + 240 * 3) + 1024];
+    char path[512];
+    FILE *f;
+    uint32_t i, x, y, n = sizeof raw, zn = 0, a = 1, b = 0;
+    uint8_t ihdr[13] = {0, 0, 0, 240, 0, 0, 0, 240, 8, 2, 0, 0, 0};
+    if (!outdir)
+        return;
+    for (y = 0; y < 240u; y++) {
+        uint8_t *r = raw + y * (1u + 240u * 3u);
+        r[0] = 0;                                       /* (filter: none) */
+        for (x = 0; x < 240u; x++) {
+            uint16_t p = swap16(screen[y * 240 + x]);
+            r[1 + 3 * x] = (uint8_t)((p >> 11) * 255 / 31);
+            r[2 + 3 * x] = (uint8_t)(((p >> 5) & 63) * 255 / 63);
+            r[3 + 3 * x] = (uint8_t)((p & 31) * 255 / 31);
+        }
+    }
+    z[zn++] = 0x78, z[zn++] = 0x01;                     /* zlib, stored blocks */
+    for (i = 0; i < n; i += 65535u) {
+        uint32_t len = n - i < 65535u ? n - i : 65535u;
+        z[zn++] = (uint8_t)(i + len >= n);
+        z[zn++] = (uint8_t)len, z[zn++] = (uint8_t)(len >> 8), z[zn++] = (uint8_t)~len, z[zn++] = (uint8_t)(~len >> 8);
+        memcpy(z + zn, raw + i, len);
+        zn += len;
+    }
+    for (i = 0; i < n; i++)
+        a = (a + raw[i]) % 65521u, b = (b + a) % 65521u;
+    be32(z + zn, b << 16 | a);
+    zn += 4;
+    snprintf(path, sizeof path, "%s/%s.png", outdir, name);
+    f = fopen(path, "wb");
+    assert(f);
+    fwrite("\x89PNG\r\n\x1a\n", 1, 8, f);
+    png_chunk(f, "IHDR", ihdr, 13);
+    png_chunk(f, "IDAT", z, zn);
+    png_chunk(f, "IEND", NULL, 0);
+    fclose(f);
+    printf("  snapshot %s\n", path);
+}
+static void shot(const char *name) { ppm(name); png(name); }
+
 static uint32_t frame(int force)                        /* one main-loop frame, 16 ms on */
 {
     sent = 0;
@@ -230,6 +308,91 @@ int main(int argc, char **argv)
             for (x = 0; x < 64u; x++)
                 s2[y * 64 + x] = screen[(90 + y) * 240 + 88 + x];
         check("WOW & FLUTTER: the ring shakes (the same picture differs frame to frame)", memcmp(s1, s2, sizeof s1) != 0);
+    }
+    /* the audit set: five states, each drawn whole, then a few frames of animation */
+    {
+        uint32_t f;
+        dub_ctl_defaults();
+        dub_live.punch = DUB_PX_NONE;
+        dub_live.kill = 0;
+        memset(&dub_tel, 0, sizeof dub_tel);
+        dub_tel.lim_gr_q15 = 32767;
+        dub_tel.punch = 0xFFu;
+        frame(1);
+        {
+            int dark = 1;
+            for (f = 0; f < DUB_UI_NLAMP; f++)
+                dark &= px(DUB_UI_LAMPS[f].x + 2, DUB_UI_LAMPS[f].y + 2) == DUB_UI_PLATE;
+            check("audit: idle: the five lamps are there, dark (engraved gray on the plate)", dark);
+        }
+        shot("shot-1-idle");
+        dub_ctl.drive_q12 = DUB_DRIVE_MAX;              /* overdrive: drive x8, every band near full scale */
+        dub_ctl.tubby_on = 1;
+        dub_ctl.tubby_step = 4;
+        for (f = 0; f < DUB_NBAND; f++)
+            dub_tel.band_pk[f] = (uint16_t)(31000 - f * 900);
+        dub_tel.echo_env = 9000;
+        frame(1);
+        for (f = 0; f < 6u; f++)
+            fm1_ms += 40u, frame(0);
+        check("audit: overdrive: drive shown x8.0, the cones at full swing", px(32 + 2, 106 + 8) != DUB_UI_BG);
+        shot("shot-2-overdrive");
+        dub_tel.lim_gr_q15 = 10362;                     /* the limiter clamping: -10 dB */
+        fm1_ms += 40u, frame(0);
+        check("audit: limiter: the bar short and red", px(DUB_UI_LIM_X + 2, DUB_UI_LIM_Y + 4) == DUB_UI_RED &&
+              px(DUB_UI_LIM_X + DUB_UI_LIM_W - 20, DUB_UI_LIM_Y + 4) == DUB_UI_PLATE);
+        shot("shot-3-limiter");
+        dub_tel.lim_gr_q15 = 32767;
+        dub_ctl.siren_gate = 1;                         /* the siren: the gate open, the LFO at its brightest */
+        dub_tel.siren_ph = 32767;
+        dub_tel.siren_pan = 20000;
+        fm1_ms += 40u, frame(0);
+        check("audit: siren: the strobe border lit", px(DUB_UI_SCOPE_X + 1, DUB_UI_SCOPE_Y + 1) != DUB_UI_PLATE);
+        shot("shot-4-siren-strobe");
+        dub_ctl.siren_gate = 0;
+        dub_tel.echo_env = 30000;                       /* the spiral: a loud echo, WOW & FLUTTER shaking it */
+        dub_live.punch = DUB_PX_WOW;
+        dub_ctl.echo_fb_q12 = DUB_FB_MAX;
+        for (f = 0; f < 9u; f++)
+            fm1_ms += 40u, frame(0);
+        check("audit: WOW: the DRIFT lamp lit gold", px(DUB_UI_LAMPS[2].x + 2, DUB_UI_LAMPS[2].y + 2) == DUB_UI_GOLD);
+        shot("shot-5-wow-spiral");
+        dub_live.punch = DUB_PX_NONE;
+        fm1_ms += 40u, frame(0);
+        check("audit: WOW off: the DRIFT lamp dark again", px(DUB_UI_LAMPS[2].x + 2, DUB_UI_LAMPS[2].y + 2) == DUB_UI_PLATE);
+        {   /* each slot lights its lamp only, in its colour, and sends only the lamps that switched */
+            static const int8_t SLOT[DUB_UI_NLAMP] = {DUB_PX_ECHO_THROW, DUB_PX_ECHO_FREEZE, DUB_PX_WOW, DUB_PX_STUTTER,
+                                                      DUB_PX_SIREN};
+            uint32_t k, j;
+            int ok = 1, dirty = 1;
+            dub_tel.echo_env = 0;                       /* (the scope still, so the bytes are the lamps') */
+            memset(dub_tel.band_pk, 0, sizeof dub_tel.band_pk);
+            dub_ctl.echo_fb_q12 = 2458;
+            fm1_ms += 40u, frame(0);
+            fm1_ms += 40u, frame(0);
+            for (k = 0; k < DUB_UI_NLAMP; k++) {
+                uint32_t n;
+                dub_live.punch = SLOT[k];
+                fm1_ms += 40u;
+                n = frame(0);
+                for (j = 0; j < DUB_UI_NLAMP; j++)
+                    ok &= px(DUB_UI_LAMPS[j].x + 2, DUB_UI_LAMPS[j].y + 2) ==
+                          (j == k ? (k == 2u || k == 3u ? DUB_UI_GOLD : DUB_UI_RED) : DUB_UI_PLATE);
+                printf("  lamp %s on: %u bytes sent\n", DUB_UI_LAMPS[k].name, n);
+                dirty &= n == DUB_UI_LAMP_W * DUB_UI_LAMP_H * 2u +   /* the lamp; with WOW the shaking ring, with the */
+                         (k == 2u ? 72u * 72u * 2u : k == 4u ? 72u * 72u * 2u + 48u * 16u * 2u : 0u);   /* siren its strobe, note */
+                if (k == 4u)
+                    shot("shot-6-siren-lamp");
+                dub_live.punch = DUB_PX_NONE;
+                fm1_ms += 40u, frame(0);
+            }
+            check("audit: lamps: each slot lights its own (THROW, FREEZE red; DRIFT, ROLL gold; SIREN red)", ok);
+            check("audit: lamps: a switch sends only the lamps that changed (dirty rectangles)", dirty);
+            ok = 1;
+            for (j = 0; j < DUB_UI_NLAMP; j++)
+                ok &= px(DUB_UI_LAMPS[j].x + 2, DUB_UI_LAMPS[j].y + 2) == DUB_UI_PLATE;
+            check("audit: lamps: all dark again", ok);
+        }
     }
     /* the knobs */
     dub_ctl_defaults();
