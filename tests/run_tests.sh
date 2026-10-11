@@ -111,6 +111,12 @@ $CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_fx_test" tests/dub_fx_test.c -lm
 run "dub preamp effects: saturation, echo (time, feedback, freeze, throw, echo>rev, alias), spring, siren, MIDI, intercept" "$OUT/dub_fx_test"
 $CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_limiter_test" tests/dub_limiter_test.c -lm
 run "dub preamp sub bloom (downbeat, tracking, lock, gate, fades) and limiter (look-ahead, ceiling, release)" "$OUT/dub_limiter_test"
+$CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_ui_test" tests/dub_ui_test.c -lm
+mkdir -p "$OUT/dub_ui"
+run "dub preamp CONTROL TOWER: drawing, dirty rectangles (bytes a frame), knob, kills, limiter, strobe, WOW" "$OUT/dub_ui_test" "$OUT/dub_ui"
+$CC -O2 -w -DENABLE_DUB_PREAMP -Ibuild/gen -Ifirmware/src -Ifirmware/hal -o "$OUT/ui_pages_dub_test" tests/ui_pages_test.c -lm
+mkdir -p "$OUT/ui_pages_dub"
+run "live UI with the dub preamp built in (BYPASS; the menu's DUB, the tower: open, knobs, layers, HOME, pages; fuzz)" "$OUT/ui_pages_dub_test" "$OUT/ui_pages_dub"
 for c in 0 1 2; do
     $CC -DT_CDC=$c -DHALF_FRAMES=$HALF -o "$OUT/dub_usb_test_$c" tests/dub_usb_test.c -lm
     run "dub preamp USB playback (T_CDC=$c): descriptors, ring, clock drift, stop / restart" "$OUT/dub_usb_test_$c"

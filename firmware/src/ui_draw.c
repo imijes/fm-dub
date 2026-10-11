@@ -1028,6 +1028,22 @@ static void ui_draw(void)
         ui.force = 0;
         return;
     }
+#ifdef ENABLE_DUB_PREAMP
+    if (dub_ui.on && (ui.page != dub_ui.page || ui.home != dub_ui.home))
+        dub_tower_close();                              /* another page was opened: the tower makes way */
+    if (dub_ui.on) {                                    /* the dub preamp's CONTROL TOWER (dub_ui_dashboard.c) */
+        dub_tower_draw(ui.force || !dub_ui.shown);
+        dub_ui.shown = 1;
+        ui_timers();
+        ui.force = 0;
+        return;
+    }
+    if (dub_ui.shown) {                                 /* back from it */
+        dub_ui.shown = 0;
+        lcd_fill(0, 0, 240, 240, C_BLACK);
+        ui.force = 1;
+    }
+#endif
     if (vis_shown()) {                                  /* the visualiser over the TRACKS screen */
         vis_draw();
         ui_timers();

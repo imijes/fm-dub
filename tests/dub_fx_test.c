@@ -11,6 +11,9 @@
  *   spring      a crash rings, stays bounded and dies away
  *   siren       A4 at 440 Hz; the gate's envelope (on, off, silent); a square LFO an octave deep alternates 440 / 880
  *               at its rate; on the clock, a 1/4 at 120 BPM; the ping-pong pan moves the tone left and right
+ *   pads        FX held: 1..4 kill while held (apart from MIDI's), 5..9 the slot while held (the last pressed), 10 a
+ *               crash, 11..14 toggles through the queue (none lost), 15 / 16 nothing; STUTTER takes a sixteenth
+ *               and loops it, the dry out
  *   MIDI        the preamp's channel only; kills and punch slots in dub_live at once; the knobs and switches through
  *               the queue into dub_ctl (CC 7, 20, 21, 22, 23, 50..53); CC 45 crashes; another channel is SLOOP's
  *   intercept   BYPASS + no USB: the mix bit for bit; the USB audio summed (and with BYPASS); fader 0: the mix */
@@ -463,6 +466,91 @@ static void intercept(void)
     check("intercept: fader at 0 -> the mix alone", abs(ml[CTL - 1u] - 1000) <= 2 && abs(mr[CTL - 1u] - 1000) <= 2);
 }
 
+/* ------------------------------------------------------------------ pads, stutter (4.2) --- */
+static void pads(void)
+{
+    uint32_t c0;
+    dub_ctl_defaults();
+    memset(&dub_pad, 0, sizeof dub_pad);
+    dub_live.kill = 0;
+    dub_live.punch = DUB_PX_NONE;
+    dub_mq.r = dub_mq.w;
+    dub_pad_down(0, 1u << 5);
+    dub_pad_down(2, 1u << 9);
+    check("pads 1, 3 held: SUB and MID killed (dub_live)", dub_live.kill == (DUB_KILL_SUB | DUB_KILL_MID));
+    dub_pad_up(1u << 5);
+    check("pad 1 let go: SUB open, MID still killed", dub_live.kill == DUB_KILL_MID);
+#define CC(cc, v) ((uint32_t)0x0B | (0xB0u | 10u) << 8 | (uint32_t)(cc) << 16 | (uint32_t)(v) << 24)
+    dub_midi_take(CC(32, 127));                         /* MIDI kills MID too */
+    dub_pad_up(1u << 9);
+    check("a pad let go does not open a band MIDI holds killed", dub_live.kill == DUB_KILL_MID);
+    dub_midi_take(CC(32, 0));
+    check("... MIDI lets go: open", dub_live.kill == 0);
+    dub_pad_down(4, 1u << 3);
+    check("pad 5: ECHO THROW while held", dub_live.punch == DUB_PX_ECHO_THROW);
+    dub_pad_down(6, 1u << 4);
+    check("pad 7 over it: WOW (the last pressed)", dub_live.punch == DUB_PX_WOW);
+    dub_pad_up(1u << 3);
+    check("pad 5 let go (not the slot's key): WOW stays", dub_live.punch == DUB_PX_WOW);
+    dub_pad_up(1u << 4);
+    check("pad 7 let go: no slot", dub_live.punch == DUB_PX_NONE);
+    c0 = dub_live.ev_crash;
+    dub_pad_down(9, 1u << 7);
+    dub_pad_up(1u << 7);
+    check("pad 10: one SPRING CRASH, no slot held", dub_live.ev_crash == c0 + 1u && dub_live.punch == DUB_PX_NONE);
+    dub_pad_down(10, 1u << 1), dub_pad_up(1u << 1);
+    dub_pad_down(11, 1u << 1), dub_pad_up(1u << 1);
+    dub_pad_down(12, 1u << 1), dub_pad_up(1u << 1);
+    dub_pad_down(13, 1u << 1), dub_pad_up(1u << 1);
+    check("pads 11..14: dub_ctl waits for the main loop", !dub_ctl.echo_to_rev && !dub_ctl.bypass);
+    dub_mq_apply();
+    check("pads 11..14 toggle ECHO>REV, BYPASS, SIREN CLK, SUB BLOOM", dub_ctl.echo_to_rev && dub_ctl.bypass &&
+          dub_ctl.siren_sync && dub_ctl.sub_arm);
+    dub_pad_down(11, 1u << 1), dub_pad_up(1u << 1);
+    dub_pad_down(11, 1u << 1), dub_pad_up(1u << 1);
+    dub_pad_down(11, 1u << 1), dub_pad_up(1u << 1);
+    dub_mq_apply();
+    check("pad 12 three times before the main loop runs: three toggles (none lost)", !dub_ctl.bypass);
+    dub_pad_down(14, 1u << 2), dub_pad_down(15, 1u << 6);
+    dub_mq_apply();
+    check("pads 15, 16: nothing", dub_live.kill == 0 && dub_live.punch == DUB_PX_NONE && !dub_ctl.bypass);
+    dub_midi_take(CC(121, 127));
+    dub_mq_apply();
+    check("MIDI CC 121 (reset all controllers) is not a pad toggle", !dub_ctl.bypass);
+#undef CC
+}
+
+static void stutter(void)
+{
+    uint32_t i, w = dly_samples(2), worst = 0, k;
+    double ctl_new, live;
+    fx_defaults();
+    dub_ctl.echo_send_q15 = 0;                          /* (the stutter takes the bus whatever the send) */
+    dub_ctl.echo_ret_q15 = 0;
+    for (i = 0; i < SR * 3; i++)                        /* 300 Hz, then (from 1.5 s) 3 kHz */
+        buf_in[i] = (int32_t)(12000 * sin(2 * M_PI * (i < SR * 3 / 2 ? 300 : 3000) * i / SR));
+    space_run(buf_in, buf_l, NULL, SR);                 /* 1 s as it is */
+    dub_live.punch = DUB_PX_STUTTER;
+    space_run(buf_in + SR, buf_l + SR, NULL, SR * 2);
+    dub_live.punch = DUB_PX_NONE;
+    /* the loop: from one sixteenth after the press, the output repeats every sixteenth (w samples at 44.1 kHz) */
+    for (i = SR + w + 600; i < SR + w + 600 + 4 * w; i++) {
+        uint32_t d = (uint32_t)abs(buf_l[i] - buf_l[i + w]);
+        if (d > worst)
+            worst = d;
+    }
+    ctl_new = goertzel(buf_l, SR * 2, SR * 3 - 4000, 3000);   /* the new sound, while the roll goes on */
+    live = rms(buf_l, SR * 2, SR * 3 - 4000) * M_SQRT2;   /* (the roll's level: a 300 Hz sixteenth of 37.5 cycles
+                                                         * flips phase each repeat, so not at 300 Hz itself) */
+    k = SR + w / 2;                                     /* (during the take: the dry still plays) */
+    printf("  1/16 at 120 = %u samples: the roll repeats within %u; at 2..3 s: the roll %.0f, the new 3 kHz %.1f\n", w,
+           worst, live, ctl_new);
+    check("STUTTER: the dry plays on while it takes the sixteenth", fabs(buf_l[k] - buf_in[k]) < 200);
+    check("STUTTER: then the sixteenth repeats (sample for sample, within the filters' grain)", worst < 400);
+    check("STUTTER: the roll at the bus's level, the dry out: the new 3 kHz not heard (< -50 dB of it)",
+          live > 9000 && ctl_new < live * 0.00316);
+}
+
 int main(void)
 {
     song.g[G_BPM] = 120;
@@ -471,6 +559,8 @@ int main(void)
     spring();
     siren();
     midi();
+    pads();
+    stutter();
     intercept();
     printf(fails ? "%d FAILED\n" : "all ok\n", fails);
     return fails != 0;

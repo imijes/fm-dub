@@ -77,10 +77,16 @@ static void settings_save(void) {}
 #include "../firmware/src/ui_song.c"
 #include "../firmware/src/ui_studio.c"
 #include "../firmware/src/icons.c"
+#ifdef ENABLE_DUB_PREAMP
+#include "../firmware/src/dub_preamp/dub_ui_dashboard.c"   /* the dub preamp's CONTROL TOWER (as felucca.c) */
+#endif
 #include "../firmware/src/ui_draw.c"
 #include "../firmware/src/ui_vis.c"
 #include "../firmware/src/ui_layers.c"
 #include "../firmware/src/ui_menu.c"
+#ifdef ENABLE_DUB_PREAMP
+#include "../firmware/src/dub_preamp/dub_menu_extensions.c"
+#endif
 #include "../firmware/src/ui_input.c"
 #include "../firmware/src/splash.c"
 static const char *outdir;
@@ -103,6 +109,9 @@ static void frame(void)
             scope_buf[scope_w++ & (SCOPE_N - 1u)] = vis_tap[2u * i];
         }
     }
+#ifdef ENABLE_DUB_PREAMP
+    dub_mq_apply();                                 /* (main.c: the preamp's CCs and pad toggles) */
+#endif
     ui_input(); ui_leds(); ui_draw(); fm1_ms += 16;
 }
 static void frames(uint32_t n) { while (n--) frame(); }
@@ -114,12 +123,21 @@ static void key(uint32_t k) { fm1_in.notes |= 1u << k; frame(); fm1_in.notes &= 
 static int fails;
 static void check(int ok, const char *what) { printf("ui: %-74s %s\n", what, ok ? "ok" : "FAIL"); fails += !ok; }
 static const char *sub_line(void) { return layer_sub_shown; }   /* the layer's sub line as last drawn (ui_layers.c) */
+#ifdef ENABLE_DUB_PREAMP                            /* the FX layer is the dub preamp's: its own checks (dub pads) */
+static void check_fx(int ok, const char *what) { (void)ok; printf("ui: %-74s skip (FX: the dub preamp's)\n", what); }
+#else
+static void check_fx(int ok, const char *what) { check(ok, what); }
+#endif
 
 #ifndef UI_PAGES_HARNESS_ONLY                       /* (tests/stress_test.c: the harness, its own main) */
 int main(int argc, char **argv)
 {
     uint32_t i;
     outdir = argc > 1 ? argv[1] : "build/host";
+#ifdef ENABLE_DUB_PREAMP
+    dub_ctl_defaults();                                 /* the dub preamp: settings as shipped, BYPASS for SLOOP's own */
+    dub_ctl.bypass = 1;                                 /* checks (its audio bit for bit: the visualiser's pictures) */
+#endif
     {   /* the preset list by kind (ui.c BANK): every factory preset of every engine once, every name found */
         uint32_t e, k, n, hits;
         bank_resolve();
@@ -197,12 +215,12 @@ int main(int argc, char **argv)
     check(keys_guide() == (1u << key_of_white(0) | 1u << key_of_white(4) | 1u << key_of_white(8) | 1u << key_of_white(12)),
           "FX held: keys 1, 5, 9, 13 lit dim (the rows of the grid)");
     ppm("layer-punch");
-    fm1_in.notes = 1u << 4; frame(); check(punch.req == 2, "FX + the 3rd white key: punch effect 3");
+    fm1_in.notes = 1u << 4; frame(); check_fx(punch.req == 2, "FX + the 3rd white key: punch effect 3");
     ppm("layer-punch-on");
     fm1_in.notes = 0; frame(); check(punch.req == -1, "key up: the mix comes back");
-    encs[panel.enc[EN_K2]] = 10; frame(); check(song.g[G_DUST] > 0, "FX + KNOB 2: DUST");
-    encs[panel.enc[EN_K1]] = -10; frame(); check(song.g[G_FILT] < 0, "FX + KNOB 1: the filter (low-pass)");
-    encs[panel.enc[EN_K4]] = 12; frame(); check(TSEL->p[P_TFLT] > 0 && song.g[G_FILT] < 0, "FX + KNOB 4: the selected track's FILTER (high-pass)");
+    encs[panel.enc[EN_K2]] = 10; frame(); check_fx(song.g[G_DUST] > 0, "FX + KNOB 2: DUST");
+    encs[panel.enc[EN_K1]] = -10; frame(); check_fx(song.g[G_FILT] < 0, "FX + KNOB 1: the filter (low-pass)");
+    encs[panel.enc[EN_K4]] = 12; frame(); check_fx(TSEL->p[P_TFLT] > 0 && song.g[G_FILT] < 0, "FX + KNOB 4: the selected track's FILTER (high-pass)");
     ui.force = 1; frame(); ppm("layer-punch-trkflt");
     TSEL->p[P_TFLT] = 0;
     release(B_FX); check(cur_page()->scope == SC_TRK && ui.layer == LY_PLAY, "FX used then let go: no FX page");
@@ -213,9 +231,9 @@ int main(int argc, char **argv)
     press(B_FX); frames(3); tap(B_HOME); release(B_FX); frames(3);
     check(ly_lock == LY_FX && ui.layer == LY_FX && punch.hold, "FX held + HOME: locked open, FX let go");
     check(cur_page()->scope == SC_TRK, "FX + HOME: no FX page, no HOME jump");
-    fm1_in.notes = 1u << 4; frame(); check(punch.req == 2, "locked FX + the 3rd white key: punch effect 3 (no hands on FX)");
+    fm1_in.notes = 1u << 4; frame(); check_fx(punch.req == 2, "locked FX + the 3rd white key: punch effect 3 (no hands on FX)");
     fm1_in.notes = 0; frame(); check(punch.req == -1, "locked FX, key up: the mix comes back");
-    encs[panel.enc[EN_K2]] = 6; frame(); check(song.g[G_DUST] > 0, "locked FX + KNOB 2: DUST");
+    encs[panel.enc[EN_K2]] = 6; frame(); check_fx(song.g[G_DUST] > 0, "locked FX + KNOB 2: DUST");
     ui.force = 1; frame(); ppm("layer-locked");
     { uint8_t was = song.playing; tap(B_PLAY); frames(2);
       check(ly_lock == LY_FX && song.playing != was, "locked: PLAY plays and keeps the lock"); tap(B_PLAY); frames(2); }
@@ -690,6 +708,9 @@ int main(int argc, char **argv)
         encs[panel.enc[EN_SELECT]] = 1; frame(); ui.force = 1; frame(); ppm("menu-audio");
         check(mi_sec(ui.menu_sel) == MS_AUDIO, "menu: SELECT right: AUDIO (LOWCUT, USB AUDIO, USB SERIAL)");
         encs[panel.enc[EN_SELECT]] = 5; frame();
+#ifdef ENABLE_DUB_PREAMP
+        encs[panel.enc[EN_SELECT]] = 5; frame();        /* (one section a turn: past the dub preamp's DUB) */
+#endif
         sec = mi_sec(ui.menu_sel);
         check(sec == MS_SYSTEM, "menu: SELECT stops at the last section, SYSTEM");
         encs[panel.enc[EN_K2]] = 1; frame();
@@ -778,7 +799,7 @@ int main(int argc, char **argv)
         edges_btn |= BT(B_PLAY); fm1_in.buttons |= BT(B_PLAY);
         encs[panel.enc[EN_K2]] = 2; frame();
         fm1_in.buttons &= ~BT(B_PLAY);
-        check(trk[0].p[P_LWAVE] == w0 && song.g[G_DUST] > 0 && transport_req, "#102: PLAY pressed in the FX layer plays, KNOB 2 is DUST only");
+        check_fx(trk[0].p[P_LWAVE] == w0 && song.g[G_DUST] > 0 && transport_req, "#102: PLAY pressed in the FX layer plays, KNOB 2 is DUST only");
         transport_req = 0; song.g[G_DUST] = 0;
         release(B_FX); frames(20);
         song.g[G_BPM] = 120;
@@ -939,6 +960,69 @@ int main(int argc, char **argv)
         vis_style = 0; song.sel = 0; go_home(); frames(20);
     }
 
+#ifdef ENABLE_DUB_PREAMP
+    {   /* the dub preamp's CONTROL TOWER: from the menu (DUB > CONTROL TOWER, OCT+), HOME closes it, a layer held
+         * shows over it and it comes back, a page button closes it; KNOB 1..4 are the preamp's there */
+        int16_t bpm = song.g[G_BPM];
+        dub_ctl.bypass = 0;                             /* (the preamp on: the tower's meters move) */
+        go_home(); frames(2);
+        ui.menu = 1; ui.menu_sel = MI_DUBTWR; ui.force = 1; frame();
+        ppm("dub-menu");
+        tap(B_OCTUP); frames(3);
+        check(!ui.menu && dub_ui.on && dub_ui.shown, "tower: DUB > CONTROL TOWER, OCT+: the menu closes, the tower opens");
+        check(swap16(screen[239 * 240 + 120]) == 0x10A2u, "tower: on the screen (the steel background)");
+        ppm("dub-tower");
+        dub_ctl.tubby_step = 0;
+        frames(30);                                     /* (#39: the turns just after the menu closes are dropped) */
+        encs[panel.enc[EN_K1]] = 3; frame();
+        check(dub_ctl.tubby_step == 3 && dub_ctl.tubby_on, "tower: KNOB 1 turns the big knob (3 detents: step 3)");
+        encs[panel.enc[EN_K3]] = 2; frame();
+        check(dub_ctl.echo_fb_q12 == 2458 + 164, "tower: KNOB 3 the echo feedback");
+        check(song.g[G_BPM] == bpm, "tower: the knobs edit nothing else");
+        press(B_GLO); frames(40);
+        check(ui.layer == LY_MIX && dub_ui.on, "tower: a layer held shows its screen over it");
+        release(B_GLO); frames(4);
+        check(dub_ui.shown && swap16(screen[239 * 240 + 120]) == 0x10A2u, "tower: ... and it comes back whole");
+        tap(B_HOME); frames(2);
+        check(!dub_ui.on && !dub_ui.shown && !vis_on, "tower: HOME closes it (back to TRACKS, no visualiser)");
+        dub_tower_open(ui.page, ui.home); frames(2);
+        tap(B_LFO); frames(2);
+        check(!dub_ui.on && !strcmp(PAGES[ui.page].title, "LFO"), "tower: a page button closes it and opens its page");
+        dub_ctl_defaults();
+        dub_ctl.bypass = 1;
+        go_home(); frames(4);
+    }
+    {   /* the FX layer is the preamp's (4.2): the white keys its 16 pads (in the audio ISR), KNOB 1..4 its knobs */
+        uint32_t w0 = 1u << key_of_white(0), w2 = 1u << key_of_white(2), w11 = 1u << key_of_white(11);
+        dub_ctl_defaults();
+        dub_ctl.bypass = 0;
+        press(B_FX); frames(30);
+        fm1_in.notes |= w0 | w2; frames(2);
+        check(dub_live.kill == (DUB_KILL_SUB | DUB_KILL_MID), "dub pads: FX + keys 1, 3 held: SUB and MID killed");
+        check((keys_lit() & (w0 | w2)) == (w0 | w2), "dub pads: their keys lit");
+        ui.force = 1; frame(); ppm("dub-fx-layer");
+        fm1_in.notes &= ~w0; frames(2);
+        check(dub_live.kill == DUB_KILL_MID, "dub pads: key 1 up: SUB back");
+        fm1_in.notes &= ~w2; frames(2);
+        fm1_in.notes |= 1u << key_of_white(5); frames(2);
+        check(dub_live.punch == DUB_PX_ECHO_FREEZE, "dub pads: key 6 held: ECHO FREEZE");
+        fm1_in.notes &= ~(1u << key_of_white(5)); frames(2);
+        check(dub_live.punch == DUB_PX_NONE, "dub pads: ... let go: off");
+        fm1_in.notes |= w11; frames(2); fm1_in.notes &= ~w11; frames(4);
+        check(dub_ctl.bypass == 1, "dub pads: key 12 tapped: BYPASS toggles on (main loop)");
+        fm1_in.notes |= w11; frames(2); fm1_in.notes &= ~w11; frames(4);
+        check(dub_ctl.bypass == 0, "dub pads: ... and off again");
+        dub_ctl.tubby_step = 0;
+        encs[panel.enc[EN_K1]] = 4; frame();
+        encs[panel.enc[EN_K4]] = 2; frame();
+        check(dub_ctl.tubby_step == 4 && dub_ctl.siren_note_q8 == (76 << 8), "dub pads: FX + KNOB 1 big knob, KNOB 4 siren");
+        check(punch.req < 0, "dub pads: SLOOP's own punch-in effects stay off (their memory is the echo's)");
+        release(B_FX); frames(4);
+        dub_ctl_defaults();
+        dub_ctl.bypass = 1;
+        go_home(); frames(4);
+    }
+#endif
     {   /* fuzz: 20000 frames of random buttons (held or tapped), knobs and keys, with the audio running
          * between frames; every draw stays on the screen (lcd_blit / lcd_fill assert it) */
         uint32_t f, seed = 777, held = 0;
@@ -952,6 +1036,9 @@ int main(int argc, char **argv)
             }
             if (R(30) == 0) held = 0;
             if (R(700) == 0) ly_lock = (uint8_t)R(LY_COUNT);              /* (a layer locked open, at random) */
+#ifdef ENABLE_DUB_PREAMP
+            if (R(400) == 0) dub_tower_open(ui.page, ui.home);              /* (the dub preamp's tower, at random) */
+#endif
             fm1_in.buttons = held & ~(1u << panel.btn[B_HOME]);
             if (R(4) == 0) encs[R(7)] += (int32_t)R(5) - 2;
             fm1_in.notes = R(10) == 0 ? (1u << R(27)) : (R(3) ? fm1_in.notes : 0);

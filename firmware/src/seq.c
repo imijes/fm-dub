@@ -1352,10 +1352,15 @@ static void key_down(uint32_t k)
     case LY_FX: {                                     /* FX held: the white keys pick a punch-in effect */
         int32_t fx = punch_key(k);
         kb_kind[k] = KS_FX;
+#ifdef ENABLE_DUB_PREAMP
+        if (fx >= 0 && fx < (int32_t)PUNCH_NFX)
+            dub_pad_down((uint32_t)fx, 1u << k);      /* the dub preamp's 16 pads (dub_midi.c) */
+#else
         if (fx >= 0 && fx < (int32_t)PUNCH_NFX) {
             punch.req = (int8_t)fx;
             punch.keybit = 1u << k;
         }
+#endif
         return;
     }
     case LY_STEP:
@@ -1463,10 +1468,14 @@ static void key_up(uint32_t k)
     kb_kind[k] = KS_NONE;
     switch (kind) {
     case KS_FX:
+#ifdef ENABLE_DUB_PREAMP
+        dub_pad_up(1u << k);                          /* a pad let go (dub_midi.c) */
+#else
         if (punch.keybit == 1u << k) {                /* its key is up: the mix comes back */
             punch.keybit = 0;
             punch.req = -1;
         }
+#endif
         return;
     case KS_UI:
         lk_push(kb_nt[k][0], k, 0);

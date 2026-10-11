@@ -107,6 +107,12 @@ static uint32_t keys_lit(void)
     track_t *t = TSEL;
     switch (ui.layer) {
     case LY_FX:
+#ifdef ENABLE_DUB_PREAMP
+        for (i = 0; i < 16u; i++)                     /* the dub preamp's pads that are on */
+            if (dub_pad_lit(i))
+                m |= 1u << key_of_white(i);
+        return m;
+#endif
         return punch.req >= 0 ? 1u << key_of_white((uint32_t)punch.req) : 0u;
     case LY_STEP: {                                /* the steps that play; the playhead blinks */
         uint32_t len = trk_len(t);
@@ -876,6 +882,12 @@ static void ui_input(void)
     }
 #endif
     if (home == BT_TAP) {                               /* HOME acts on release: a hold opens the menu */
+#ifdef ENABLE_DUB_PREAMP
+        if (dub_ui.on) {                                /* the CONTROL TOWER: HOME closes it, back to the page */
+            dub_tower_close();
+            vis_on = 0;
+        } else
+#endif
         if (!ui.home && cur_page()->scope == SC_TRK && !vis_on)
             vis_open();                                 /* HOME on HOME: the visualiser (ui_vis.c) */
         else {
@@ -942,6 +954,11 @@ static void ui_input(void)
         for (k = 0; k < 4u; k++)
             panel_enc(EN_K1 + k);
     }
+#ifdef ENABLE_DUB_PREAMP
+    if (dub_ui.on && !rec_wait && !ft_on)               /* the CONTROL TOWER: KNOB 1..4 are the preamp's */
+        for (k = 0; k < 4u; k++)
+            dub_tower_knob(k, panel_enc(EN_K1 + k));
+#endif
     if ((s = panel_enc(EN_SELECT)) != 0 && (rec_wait || ft_on || !page_walk(s))) {   /* SELECT: the pages of the
                                                      * family shown, else (and on the REC screen) the tempo */
         song.g[G_BPM] = (int16_t)clamp(song.g[G_BPM] + accel(EN_SELECT, s, 200), GP[G_BPM].min, GP[G_BPM].max);

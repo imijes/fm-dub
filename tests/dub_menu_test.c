@@ -16,12 +16,15 @@
 #define NDIV_DLY 8u
 enum { G_DRCH, G_COUNT };
 static struct { int16_t g[G_COUNT]; } song;
-static struct { uint8_t force; } ui;
+static struct { uint8_t force, page, home; } ui;
 static uint16_t pal[5] = {0, 1, 2, 3, 4};
 #define C_DIM pal[1]
 #define C_AMB pal[3]
 #define C_HI pal[4]
-enum { MI_DUBCH = 8, MI_DUBON, MI_DUBRST };
+enum { MI_DUBCH = 8, MI_DUBON, MI_DUBRST, MI_DUBTWR };
+static int menu_closed, tower_opened;
+static void menu_close(void) { menu_closed++; }
+static void dub_tower_open(uint32_t page, uint32_t home) { (void)page, (void)home; tower_opened++; }
 static int32_t clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 static void fmt_int(char *b, int32_t v) { snprintf(b, 4, "%d", (int)v); }
 static const char *last_msg;
@@ -130,6 +133,11 @@ int main(void)
     bad += check("menu: DEFAULTS ignores a knob", dub_ctl.midi_ch == 5u && dub_ctl.bypass == 1u);
     dub_mi_set(MI_DUBRST, 0);
     bad += check("menu: DEFAULTS on OCT+", dub_ctl.midi_ch == 11u && !dub_ctl.bypass && last_msg && ui.force);
+    dub_mi_set(MI_DUBTWR, 1);
+    bad += check("menu: CONTROL TOWER ignores a knob", !menu_closed && !tower_opened);
+    dub_mi_set(MI_DUBTWR, 0);
+    bad += check("menu: CONTROL TOWER on OCT+: the menu closes, the tower opens", menu_closed == 1 && tower_opened == 1);
+    bad += check("menu: CONTROL TOWER shows as an action", !strcmp(dub_mi_value(MI_DUBTWR, &c), "") && c == C_DIM);
 
     /* save, boot again */
     dub_ctl.midi_ch = 7;

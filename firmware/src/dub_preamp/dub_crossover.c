@@ -81,7 +81,8 @@ static struct {
  * back through a1 and a2 too. Without that the rounding re-enters through 1 / A(z), which at a low cutoff is
  * huge (1 / (1 + a1 + a2): +77 dB at 80 Hz): a noise floor near -70 dB and a small limit cycle after silence.
  * Two more multiplies; the bands' floor goes below -110 dB and the state settles to 0. */
-static inline int32_t dub_bq(const dub_bq_coef_t *c, dub_bq_t *z, int32_t x)
+static __attribute__((noinline)) int32_t dub_bq(const dub_bq_coef_t *c, dub_bq_t *z, int32_t x)   /* (out of line:
+                                                         * the flash is full; 11 calls a sample) */
 {
     int64_t acc = (int64_t)c->b0 * x + z->s1;
     int32_t y = (int32_t)((acc + (1LL << 29)) >> 30);
@@ -92,7 +93,8 @@ static inline int32_t dub_bq(const dub_bq_coef_t *c, dub_bq_t *z, int32_t x)
 }
 /* the same without the remainder: for the 3.5 kHz filters, where 1 / (1 + a1 + a2) is only +15 dB (the floor
  * stays below -120 dB) */
-static inline int32_t dub_bq_hi(const dub_bq_coef_t *c, dub_bq_t *z, int32_t x)
+static __attribute__((noinline)) int32_t dub_bq_hi(const dub_bq_coef_t *c, dub_bq_t *z, int32_t x)   /* (out of
+                                                         * line: 7 calls a sample, ~1.4 kB less flash, which is full) */
 {
     int64_t acc = (int64_t)c->b0 * x + z->s1;
     int32_t y = (int32_t)((acc + (1LL << 29)) >> 30);

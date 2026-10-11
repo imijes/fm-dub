@@ -479,6 +479,10 @@ static void layer_knobs(uint32_t layer)
         ui.hot_t = 40;
         switch (layer) {
         case LY_FX:
+#ifdef ENABLE_DUB_PREAMP
+            dub_tower_knob(k, s);                       /* the dub preamp: big knob, drive, feedback, siren */
+            break;
+#endif
             if (k == 0u)
                 song.g[G_FILT] = (int16_t)clamp(song.g[G_FILT] + accel(EN_K1, s, 127), -64, 63);
             else if (k == 1u)
@@ -655,6 +659,18 @@ static void layer_screen_draw(void)
     switch (layer) {
     case LY_FX:                                         /* the 16 punch-in effects */
         col = TE_DRUM;
+#ifdef ENABLE_DUB_PREAMP
+        str_cpy(sub, "dub pads", sizeof sub);           /* the dub preamp's pads and knobs (dub_ui_dashboard.c) */
+        for (i = 0; i < 16u; i++) {
+            int on = dub_pad_lit(i);
+            str_cpy(tl[i].lab, DUB_PAD_NAME[i], 8);
+            tl[i].bg = on ? C_WHITE : TE_G1;
+            tl[i].fg = on ? C_BLACK : TE_G4;
+            tl[i].top = on ? 0 : TE_DIM[i / 4u];
+        }
+        dub_fx_knobs(v, lab, ratio);
+        break;
+#endif
         str_cpy(sub, "hold + key", sizeof sub);
         for (i = 0; i < 16u; i++) {
             static const char *const PSHORT[16] = {"loop 4", "loop 8", "loop16", "loop32", "stutt", "rev", "stop", "half",

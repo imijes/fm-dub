@@ -5,14 +5,14 @@
  * before / after (stopping at the ends), KNOB 1..3 set the section's settings in order (the knob's colour marks
  * its row), PRESETS moves the cursor; OCT+ steps the cursor's setting round or opens it (CALIBRATION, ABOUT),
  * OCT- closes (from ABOUT: back to the section).
- * ENABLE_DUB_PREAMP: a DUB section before SYSTEM (MIDI CH, PREAMP, DEFAULTS: dub_preamp/dub_menu_extensions.c). */
+ * ENABLE_DUB_PREAMP: a DUB section before SYSTEM (MIDI CH, PREAMP, DEFAULTS, CONTROL TOWER: dub_menu_extensions.c). */
 /* ------------------------------------------------------------ menu --- */
 #ifdef ENABLE_DUB_PREAMP
 enum { MI_COLOR, MI_ZOOM, MI_LIGHTS, MI_KEYS, MI_NOTES, MI_LOWCUT, MI_USB, MI_SERIAL, MI_DUBCH, MI_DUBON, MI_DUBRST,
-       MI_PANEL, MI_ABOUT, MI_COUNT };
+       MI_DUBTWR, MI_PANEL, MI_ABOUT, MI_COUNT };
 static const char *const MI_NAME[MI_COUNT] = {"COLOR", "ZOOM", "LIGHTS", "KEYS", "NOTES", "SPEAKER LOWCUT", "USB AUDIO",
-                                              "USB SERIAL", "MIDI CH", "PREAMP", "DEFAULTS", "HARDWARE CALIBRATION",
-                                              "ABOUT"};
+                                              "USB SERIAL", "MIDI CH", "PREAMP", "DEFAULTS", "CONTROL TOWER",
+                                              "HARDWARE CALIBRATION", "ABOUT"};
 enum { MS_SCREEN, MS_LIGHTS, MS_AUDIO, MS_DUB, MS_SYSTEM, MS_COUNT };
 static const char *const MS_NAME[MS_COUNT] = {"SCREEN", "LIGHTS", "AUDIO", "DUB", "SYSTEM"};
 static const uint8_t MS_FIRST[MS_COUNT + 1] = {MI_COLOR, MI_LIGHTS, MI_LOWCUT, MI_DUBCH, MI_PANEL, MI_COUNT};
@@ -149,8 +149,13 @@ static void draw_menu(void)
                 if (i == MI_SERIAL && usb_serial != usb_cdc_now())
                     cv_text(xv + 8, y + 30, &FONT_S, "RESTART", C_AMB);   /* (usb.c: at the next start) */
             }
+#ifdef ENABLE_DUB_PREAMP
+            if (MS_FIRST[sec + 1u] - MS_FIRST[sec] <= 3u)   /* (a section of four rows: DUB; no room for the hints) */
+#endif
+            {
             cv_text(4, MI_Y0 + 3 * MI_DY + 6, &FONT_S, "SELECT SECTION  KNOB SETS", C_DIM);
             cv_text(4, MI_Y0 + 3 * MI_DY + 22, &FONT_S, "OCT+ OK   OCT- CLOSE", C_DIM);   /* (rows .. 218) */
+            }
         }
         cv_oy = 0;
         cv_blit(0, H_HEAD + 1 + pass * 124u);

@@ -6,6 +6,7 @@
  *                      channel (1..3) or the drum channel (GLO > DRUMS > CH): both would hear it
  *   KNOB 2  PREAMP     ON / BYPASS (the same switch as pad 12 USB BYP on the MIX page)
  *   KNOB 3  DEFAULTS   OCT+ puts every preamp setting back as shipped
+ *   KNOB 4  CONTROL TOWER  OCT+ opens the dashboard (dub_ui_dashboard.c; HOME closes it)
  *
  * Flash: one record in the sector 0xFB000 (free after USR4, fm1_flash.h FL_DUB_LO). The SLOOP settings object is
  * not touched, so the official SLOOP firmware still reads it as its own (going back keeps the SYN kits). One sector,
@@ -219,6 +220,9 @@ static const char *dub_mi_value(uint32_t i, uint16_t *c)
     case MI_DUBRST:
         *c = C_DIM;
         return "OCT+ RESETS";
+    case MI_DUBTWR:
+        *c = C_DIM;
+        return "";                                    /* (an action: "OCT+ OPENS") */
     default: return 0;
     }
 }
@@ -241,6 +245,12 @@ static int dub_mi_set(uint32_t i, int32_t s)
             dub_ctl_defaults();
             ui_message("DUB DEFAULTS");
             ui.force = 1;
+        }
+        return 1;
+    case MI_DUBTWR:
+        if (!s) {
+            menu_close();                             /* (saves, goes to the TRACKS page) */
+            dub_tower_open(ui.page, ui.home);
         }
         return 1;
     default:

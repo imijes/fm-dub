@@ -30,6 +30,9 @@
  *   punch ECHO THROW: the dry bus fades out (~0.7 ms), the whole bus goes into the echo
  *   punch ECHO FREEZE: no input; the line goes round as it is, at exactly 1.0, no filter, whole samples (forever)
  *   punch WOW & FLUTTER: the read point wanders: a 0.7 Hz wow (+-0.9 ms) and LFSR noise flutter (low-passed)
+ *   punch STUTTER ROLL: the line takes the whole bus for one 1/16 note (at the tempo; 125 ms stopped), the dry
+ *     still playing; then it loops that 1/16 (the line at exactly that length, frozen) and the dry fades out: a
+ *     roll of the last sixteenth for as long as the pad is held
  *
  * SPRING: Schroeder: three parallel combs (487, 617, 727 samples at 22.05 kHz: primes, 22..33 ms) with a damping
  * low-pass in each loop (dub_ctl.rev_damp_q15) and their feedback from dub_ctl.rev_decay_q15 (at most 0.93), into
@@ -106,6 +109,8 @@ static struct {
     int32_t env;                      /* the echo's level, Q15 (the scope ring) */
     uint32_t crash_c, crash_l;        /* ev_crash seen (dub_ctl, dub_live) */
     uint32_t crash_n;                 /* ticks of the crash's burst still to go */
+    uint8_t stut;                     /* STUTTER: 0 off, 1 taking the sixteenth, 2 looping it */
+    uint32_t stut_n, stut_w;          /* ticks still to take, the loop's length (22.05 kHz samples) */
     int8_t punch;                     /* the punch slot last block (an edge into SPRING CRASH) */
     /* the siren */
     uint32_t sph;                     /* carrier phase */
@@ -148,11 +153,14 @@ static inline int32_t dub_space22(int32_t s, int32_t punch, int crash, int32_t d
 {
     int16_t *m = dub_line_mem;
     int32_t ein, tap, d, idx, fr, a, b, v, fbv, to_line, to_rev, sin_, sum, y, k;
-    int freeze = punch == DUB_PX_ECHO_FREEZE;
-    /* the delay: glide (tape) and, WOW & FLUTTER, wander */
-    dub_fx.d_q8 += (dtarget_q8 - dub_fx.d_q8) >> 9;
+    int stut = dub_fx.stut, freeze = punch == DUB_PX_ECHO_FREEZE || stut == 2;
+    /* the delay: glide (tape) and, WOW & FLUTTER, wander; STUTTER: exactly its sixteenth */
+    if (stut)
+        dub_fx.d_q8 = (int32_t)(dub_fx.stut_w << 8);
+    else
+        dub_fx.d_q8 += (dtarget_q8 - dub_fx.d_q8) >> 9;
     d = dub_fx.d_q8;
-    if (punch == DUB_PX_WOW) {
+    if (punch == DUB_PX_WOW && !stut) {
         uint32_t bit = ((dub_fx.lfsr >> 0) ^ (dub_fx.lfsr >> 2) ^ (dub_fx.lfsr >> 3) ^ (dub_fx.lfsr >> 5)) & 1u;
         dub_fx.lfsr = (dub_fx.lfsr >> 1) | (bit << 15);
         dub_fx.flut += ((((int32_t)(dub_fx.lfsr & 0xFFFFu) - 32768) * 4) - dub_fx.flut) >> 6;
@@ -181,11 +189,15 @@ static inline int32_t dub_space22(int32_t s, int32_t punch, int crash, int32_t d
         dub_fx.er = dub_fx.er < er_to ? (er_to - dub_fx.er > DUB_RAMP ? dub_fx.er + DUB_RAMP : er_to)
                                       : (dub_fx.er - er_to > DUB_RAMP ? dub_fx.er - DUB_RAMP : er_to);
     to_rev = (fbv * dub_fx.er) >> 15;
-    to_line = fbv - to_rev;
-    ein = punch == DUB_PX_ECHO_THROW ? s : (s * send) >> 15;
+    to_line = stut ? 0 : fbv - to_rev;
+    ein = punch == DUB_PX_ECHO_THROW || stut ? s : (s * send) >> 15;
     m[dub_fx.ew] = (int16_t)(freeze ? tap : dub_s16(dub_sat(ein + to_line)));
     if (++dub_fx.ew >= DUB_ECHO_N)
         dub_fx.ew = 0;
+    if (stut)
+        ret = stut == 2 ? 32767 : 0;                          /* (taking: the tape's old echo stays silent) */
+    if (stut == 1 && !--dub_fx.stut_n)
+        dub_fx.stut = 2;                                      /* the sixteenth is in: loop it */
     /* the spring */
     sin_ = (((s * rsend) >> 15) + to_rev) >> 1;
     if (crash)
@@ -309,6 +321,14 @@ static __attribute__((noinline)) void dub_space_block(int32_t *l, int32_t *r, ui
         dub_fx.punch = (int8_t)punch;
     }
     dub_siren_block(l, r, n, punch);
+    if (punch == DUB_PX_STUTTER && !dub_fx.stut) {            /* STUTTER pressed: take the next sixteenth */
+        uint32_t w = song.g[G_BPM] > 0 ? dly_samples(2) / 2u : 2756u;   /* (N_DLY 2: 1/16) */
+        dub_fx.stut_w = w < 64u ? 64u : w > DUB_ECHO_N - 64u ? DUB_ECHO_N - 64u : w;
+        dub_fx.stut_n = dub_fx.stut_w;
+        dub_fx.stut = 1;
+    } else if (punch != DUB_PX_STUTTER && dub_fx.stut) {
+        dub_fx.stut = 0;                                      /* let go: the echo as set again (it glides back) */
+    }
     /* per block: the delay target (Q8, 22.05 kHz samples), the gains */
     if (dub_ctl.echo_sync && song.g[G_BPM] > 0)               /* Q8, 22.05 kHz samples: 44.1 kHz ones x 128 */
         dt = (int32_t)(dly_samples((uint32_t)dub_ctl.echo_div % NDIV_DLY) * 128u);
@@ -323,7 +343,7 @@ static __attribute__((noinline)) void dub_space_block(int32_t *l, int32_t *r, ui
     rg = (dub_ctl.rev_decay_q15 * 30474) >> 15;               /* at most 0.93 */
     damp = dub_ctl.rev_damp_q15;
     er_to = dub_ctl.echo_to_rev ? 32767 : 0;
-    dry_to = punch == DUB_PX_ECHO_THROW ? 0 : 32767;
+    dry_to = punch == DUB_PX_ECHO_THROW ? 0 : 32767;   /* (STUTTER: per sample, below: once it loops) */
     if (punch == DUB_PX_ECHO_FREEZE)
         fb = DUB_Q12_ONE;
     for (i = 0; i < n; i++) {
@@ -353,6 +373,8 @@ static __attribute__((noinline)) void dub_space_block(int32_t *l, int32_t *r, ui
                 acc += (int64_t)DUB_FX_FIR[2u * k + 1u] * dub_fx.ih[dub_fx.iw + DUB_FX_TAPS / 2u - 1u - k];
         }
         wet = (int32_t)((acc + 8192) >> 14);                  /* x 2: the zeros between the 22.05 kHz samples */
+        if (dub_fx.stut == 2)
+            dry_to = 0;
         if (dry != dry_to) {
             dry = dry < dry_to ? (dry_to - dry > DUB_RAMP ? dry + DUB_RAMP : dry_to)
                                : (dry - dry_to > DUB_RAMP ? dry - DUB_RAMP : dry_to);

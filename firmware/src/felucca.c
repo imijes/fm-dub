@@ -68,6 +68,9 @@
 #include "ui_song.c"
 #include "ui_studio.c"
 #include "icons.c"           /* parameter icons (FELUCCA_ICONS), used by ui_draw.c */
+#ifdef ENABLE_DUB_PREAMP
+#include "dub_preamp/dub_ui_dashboard.c"   /* 4.1: the PREAMP CONTROL TOWER (drawn by ui_draw.c) */
+#endif
 #include "ui_draw.c"
 #include "ui_vis.c"           /* the full-screen visualiser (HOME on HOME, 2.4) */
 #include "ui_layers.c"       /* hold a function button: what the keys and knobs do (TE style) */
