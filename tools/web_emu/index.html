@@ -1,19 +1,25 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
-<!-- The dub preamp in the browser: the CONTROL TOWER running on SLOOP's real engine (WebAssembly: preamp_emu.js,
-     built by build_emu.sh), and the FM-1 installer of SLOOP (web/fm1ota.js, web/fm1pkg.js over WebMIDI) to put
-     build/felucca.fwsc on the hardware. Serve the repository's root: python3 -m http.server 8000 --bind 127.0.0.1,
-     then open http://localhost:8000/tools/web_emu/ in Chrome or Edge. -->
+<!-- The dub preamp FM-1 in the browser (Phase 7.2): the whole firmware (SLOOP's engine, UI and menu, the dub preamp)
+     in WebAssembly (preamp_emu.js, built by build_emu.sh) inside an M-VAVE FM-1 shell (skin.js, after Hortator's
+     simulator: raw button / key / encoder events in, the screen and LEDs out), and the FM-1 installer
+     (installer.js: SLOOP's web/fm1ota.js and web/fm1pkg.js over WebMIDI, driven as Hortator's installer page) to put
+     the pinned build/felucca.fwsc on the hardware. Nothing makes sound until the shell's POWER ON is clicked.
+     Serve the repository's root: python3 -m http.server 8000 --bind 127.0.0.1, then open
+     http://localhost:8000/tools/web_emu/ in Chrome or Edge. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dub Preamp Sound System</title>
+<link rel="icon" href="data:,">
 <style>
   :root {
-    --wall: #0e120d; --wall2: #161d14; --steel: #121212; --plate: #2c2e30; --edge: #4e5054;
-    --silver: #c4c6c8; --gray: #6e6e76; --gold: #fabc00; --red: #e82820; --green: #14963c;
-    --wood1: #6b3f1f; --wood2: #8a5a2e; --wood3: #4a2a12;
+    --wall: #0e120d; --wall2: #161d14; --steel: #121212; --gray: #6e6e76; --silver: #c4c6c8;
+    --gold: #fabc00; --red: #e82820; --green: #14963c;
+    /* the FM-1 shell (Hortator's simulator palette) */
+    --body: #5a5e65; --body-edge: #474b51; --bed: #2c2f34; --cap: #3b3e44; --cap-top: #4a4e55; --silk: #e6e4dc;
+    --led: #f2f7ff;
   }
   * { box-sizing: border-box; }
   body {
@@ -28,105 +34,110 @@
   header { text-align: center; padding: 14px 16px 4px; }
   header h1 { margin: 0; font-size: 22px; letter-spacing: .3em; color: var(--gold); text-shadow: 0 2px 0 #000; }
   header p { margin: 4px 0 0; color: var(--gray); letter-spacing: .15em; font-size: 12px; }
-  .stage { display: flex; justify-content: center; align-items: flex-start; gap: 18px; padding: 16px; flex-wrap: wrap; }
-  .cabinet { width: 170px; flex: none; }
+  .stage { display: flex; justify-content: center; align-items: flex-start; gap: 18px; padding: 28px 16px 16px; }
+  .cabinet { width: 150px; flex: none; margin-top: 30px; }
   .cabinet svg { width: 100%; height: auto; display: block; filter: drop-shadow(0 10px 18px rgba(0,0,0,.7)); }
-  .rack {
-    width: 560px; max-width: 100%; flex: none; padding: 16px 18px 18px; border-radius: 6px;
-    background: linear-gradient(180deg, #1a1b1c, #0f1010); border: 1px solid #000;
-    box-shadow: inset 0 1px 0 #3a3c3e, inset 0 -1px 0 #000, 0 14px 30px rgba(0,0,0,.7);
-    position: relative;
+  .shell { position: relative; flex: 1 1 1000px; max-width: 1000px; min-width: 0; }
+
+  /* ---- the FM-1 (skin.js): drawn at its design size, scaled to fit (--scale) */
+  .device {
+    position: absolute; left: 0; top: 18px; transform-origin: 0 0; transform: scale(var(--scale, 1));
+    background: linear-gradient(170deg, #63676e, var(--body) 40%, var(--body-edge)); border-radius: 44px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 -2px 0 rgba(0,0,0,.25) inset, 0 18px 40px rgba(0,0,0,.6);
+    touch-action: none; user-select: none; -webkit-user-select: none;
   }
-  .rack::before, .rack::after {                      /* the rack ears' screws */
-    content: ""; position: absolute; top: 14px; width: 10px; height: 10px; border-radius: 50%;
-    background: radial-gradient(circle at 35% 35%, #9a9ca0, #3a3c3e); box-shadow: 0 1px 0 #000;
-  }
-  .rack::before { left: 8px; } .rack::after { right: 8px; }
-  .bezel {
-    margin: 0 auto; width: 504px; max-width: 100%; padding: 12px; border-radius: 8px;
-    background: #050505; border: 2px solid #2a2b2c; box-shadow: inset 0 0 18px #000, 0 0 0 4px #1d1e1f;
-  }
-  canvas#lcd { width: 480px; height: 480px; max-width: 100%; aspect-ratio: 1; display: block; margin: 0 auto;
-               image-rendering: pixelated; background: var(--steel); }
-  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
-  .knobs { display: flex; justify-content: space-around; margin-top: 16px; }
-  .knob { text-align: center; user-select: none; cursor: ns-resize; touch-action: none; }
-  .knob svg { width: 70px; height: 70px; display: block; margin: 0 auto; }
-  .knob .lab { color: var(--gray); font-size: 11px; letter-spacing: .12em; margin-top: 2px; }
-  .knob .key { color: #444; font-size: 10px; }
-  .pads { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; margin-top: 16px; }
-  .pad {
-    height: 44px; border-radius: 4px; border: 1px solid #000; cursor: pointer; user-select: none; touch-action: none;
-    background: linear-gradient(180deg, #3a3c3e, #26282a); color: var(--gray);
-    box-shadow: inset 0 1px 0 #55575a, 0 2px 0 #000; font: 10px/1.1 inherit; letter-spacing: .05em;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-  }
-  .pad .k { color: #555; font-size: 9px; margin-top: 2px; }
-  .pad.down { transform: translateY(1px); box-shadow: inset 0 1px 0 #55575a; }
-  .pad.lit { background: var(--gold); color: #121212; } .pad.lit .k { color: #5a4400; }
-  .pad.kill.lit, .pad.hot.lit { background: var(--red); color: #fff; } .pad.kill.lit .k, .pad.hot.lit .k { color: #ffd0cc; }
-  button.big {
-    font: 12px inherit; letter-spacing: .15em; padding: 9px 14px; border-radius: 4px; cursor: pointer;
-    border: 1px solid #000; color: #121212; background: var(--gold); box-shadow: inset 0 1px 0 #ffe27a, 0 2px 0 #000;
-  }
-  button.big:disabled { background: #3a3c3e; color: #666; box-shadow: none; cursor: default; }
-  button.plain { background: var(--plate); color: var(--silver); box-shadow: inset 0 1px 0 #55575a, 0 2px 0 #000; }
-  .flash { margin-top: 18px; padding: 12px; border-radius: 4px; background: #0b0c0c; border: 1px solid #2a2b2c; }
+  .device > * { position: absolute; }
+  .tray { background: var(--bed); border-radius: 18px; box-shadow: 0 2px 3px rgba(0,0,0,.5) inset; }
+  .tray.keybed { border-radius: 26px; }
+  .bezel { background: #101214; border-radius: 22px; box-shadow: 0 0 0 3px #3a3d42, 0 2px 4px rgba(0,0,0,.5) inset; }
+  canvas.lcd { image-rendering: pixelated; image-rendering: crisp-edges; border-radius: 4px; background: var(--steel); }
+  .lbl { font-size: 12px; color: var(--silk); text-align: center; pointer-events: none; white-space: nowrap; line-height: 1; letter-spacing: .06em; }
+  .enc { border-radius: 50%; cursor: ns-resize; }
+  .enc .skirt { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #4a4d52, #1d1f22 70%);
+    box-shadow: 0 3px 6px rgba(0,0,0,.5); }
+  .enc .cap { position: absolute; inset: 7px; border-radius: 50%; background: repeating-conic-gradient(#2b2d31 0 4deg, #34373b 4deg 8deg);
+    transform: rotate(var(--turn, 0deg)); }
+  .enc .cap::after { content: ""; position: absolute; left: 50%; top: 3px; width: 3px; height: 11px; margin-left: -1.5px;
+    border-radius: 2px; background: var(--gold); }
+  .btn { border-radius: 9px; cursor: pointer; background: linear-gradient(180deg, var(--cap-top), var(--cap));
+    box-shadow: 0 2px 0 #1c1e21, 0 3px 5px rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #9a9ea5; }
+  .btn.down { transform: translateY(2px); box-shadow: 0 0 0 #1c1e21, 0 1px 2px rgba(0,0,0,.5); }
+  .btn.lit { color: var(--led); text-shadow: 0 0 6px rgba(220,235,255,.9), 0 0 14px rgba(200,225,255,.5); }
+  .btn .two { text-align: center; line-height: 1.15; }
+  .key { border-radius: 999px; cursor: pointer; background: linear-gradient(180deg, #45484e, #35383d);
+    box-shadow: 0 2px 0 #18191c, 0 3px 5px rgba(0,0,0,.5); }
+  .key .stripe { position: absolute; left: 50%; top: 18%; bottom: 30%; width: 5px; margin-left: -2.5px; border-radius: 3px;
+    background: #6c7077; transition: background 50ms, box-shadow 50ms; }
+  .btn.latched, .key.latched { outline: 2px dashed var(--gold); outline-offset: 3px; }
+  .hint { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 10px; line-height: 1;
+    color: #b9bdc4; pointer-events: none; }
+  .btn .hint { bottom: -15px; color: var(--silk); }
+  .key.down { transform: translateY(2px); box-shadow: 0 0 0 #18191c, 0 1px 2px rgba(0,0,0,.5); }
+  .key.lit .stripe { background: var(--gold); box-shadow: 0 0 8px 2px rgba(250,188,0,.8); }
+  .power { border: 1px solid #000; border-radius: 8px; cursor: pointer; font: 13px/1 inherit; letter-spacing: .15em;
+    color: #121212; background: var(--gold); box-shadow: inset 0 1px 0 #ffe27a, 0 3px 0 #000, 0 0 18px rgba(250,188,0,.45);
+    animation: nudge 1.6s ease-in-out infinite; }
+  .power.on { background: #2c2f34; color: var(--gold); box-shadow: inset 0 1px 0 #55575a, 0 3px 0 #000; animation: none; }
+  .power:disabled { opacity: .6; cursor: progress; }
+  @keyframes nudge { 50% { box-shadow: inset 0 1px 0 #ffe27a, 0 3px 0 #000, 0 0 30px rgba(250,188,0,.8); } }
+  @media (prefers-reduced-motion: reduce) { .power { animation: none; } }
+  .device.powered-off canvas.lcd { opacity: .15; transition: opacity .3s; }
+  .device.powered-off .lit { color: inherit; text-shadow: none; }
+  .device.powered-off .key.lit .stripe { background: #6c7077; box-shadow: none; }
+
+  .bar { display: flex; justify-content: center; gap: 14px; align-items: center; padding: 0 16px; }
+  .hint { color: #666; font-size: 11px; text-align: center; margin: 6px 0 0; }
+  .flash { max-width: 760px; margin: 18px auto 0; padding: 12px; border-radius: 4px; background: #0b0c0c; border: 1px solid #2a2b2c; }
   .flash h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: .2em; color: var(--red); }
   .flash p { margin: 4px 0; color: var(--gray); font-size: 12px; }
   .flash .status { color: var(--silver); min-height: 1.4em; }
   progress { width: 100%; height: 10px; accent-color: var(--gold); }
   pre#log { max-height: 110px; overflow: auto; font-size: 10px; color: #555; margin: 6px 0 0; white-space: pre-wrap; }
-  .hint { color: #555; font-size: 11px; text-align: center; margin-top: 10px; }
+  button.big { font: 12px inherit; letter-spacing: .15em; padding: 9px 14px; border-radius: 4px; cursor: pointer;
+    border: 1px solid #000; color: #121212; background: var(--gold); box-shadow: inset 0 1px 0 #ffe27a, 0 2px 0 #000; }
+  button.big:disabled { background: #3a3c3e; color: #666; box-shadow: none; cursor: default; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; }
   footer { text-align: center; color: #444; font-size: 11px; padding: 10px 16px 18px; }
   footer a { color: var(--gray); }
-  @media (max-width: 960px) { .cabinet { display: none; } }
+  @media (max-width: 1180px) { .cabinet { display: none; } }
 </style>
 </head>
 <body>
 <div class="flag"></div>
 <header>
   <h1>DUB PREAMP SOUND SYSTEM</h1>
-  <p>M-VAVE FM-1 // SOUND SYSTEM PREAMP // DUB PREAMP FORK V1.0A</p>
+  <p>M-VAVE FM-1 // SOUND SYSTEM PREAMP // DUB PREAMP FORK</p>
 </header>
 
 <div class="stage">
   <div class="cabinet" id="cab-l"></div>
-
-  <div class="rack">
-    <div class="bezel"><canvas id="lcd" width="240" height="240"></canvas></div>
-
-    <div class="row">
-      <button class="big" id="power">POWER ON</button>
-      <span id="emu-status" class="hint" style="margin:0">the preamp is off: press POWER ON (sound needs a click)</span>
-      <button class="big plain" id="play" disabled>PLAY</button>
-    </div>
-
-    <div class="knobs" id="knobs"></div>
-    <div class="pads" id="pads"></div>
-    <p class="hint">pads: hold 1-8 and Q-I &nbsp;|&nbsp; knobs: drag, wheel, or A/Z S/X D/C F/V &nbsp;|&nbsp;
-      notes on track 3: H J K L ; ' &nbsp;|&nbsp; space: play / stop</p>
-
-    <div class="flash">
-      <h2>FLASH SUITE TO HARDWARE</h2>
-      <p>Writes <code>build/felucca.fwsc</code> to an FM-1 on USB with SLOOP's own installer (WebMIDI SysEx).
-        Build it first with <code>ENABLE_DUB_PREAMP=1 ./build.sh</code>. Chrome or Edge; connect the FM-1 straight
-        to this computer and close other MIDI apps. Do not unplug it while writing. If an install ever fails and the
-        FM-1 does not start, recovering it needs a Transporter. Custom firmware, no warranty.</p>
-      <p class="status" id="fl-status">loading the package...</p>
-      <progress id="fl-bar" max="100" value="0"></progress>
-      <div class="row" style="margin-top:8px">
-        <span class="hint" id="fl-pkg" style="margin:0"></span>
-        <button class="big" id="fl-go" disabled>FLASH SUITE TO HARDWARE</button>
-      </div>
-      <pre id="log"></pre>
-    </div>
-  </div>
-
+  <div class="shell" id="shell"></div>
   <div class="cabinet" id="cab-r"></div>
 </div>
+<div class="bar"><span id="emu-status" class="hint">the FM-1 is off: press POWER ON (sound starts with that click)</span></div>
+<p class="hint">the whole FM-1: every button, key and knob goes to the firmware as on the hardware. Keyboard: Esc HOME
+  (hold: the menu) &nbsp;|&nbsp; G GLO (hold: the Mix grid) &nbsp;|&nbsp; ` FX (hold: the dub pads) &nbsp;|&nbsp; ← → OCT- / OCT+
+  &nbsp;|&nbsp; ↑ ↓ SELECT &nbsp;|&nbsp; PgUp PgDn PRESETS &nbsp;|&nbsp; Space PLAY, Enter REC &nbsp;|&nbsp; keys Z S X D C .. and Q W 3 E 4 ..
+  &nbsp;|&nbsp; right-click a button or key: held until right-clicked again</p>
 
-<footer>Based on SLOOP + Felucca (GPL-3.0, no warranty). The installer is SLOOP's
+<section class="flash">
+  <h2>FLASH SUITE TO HARDWARE</h2>
+  <p>Writes the pinned <code>build/felucca.fwsc</code> to an FM-1 on USB with SLOOP's own installer (WebMIDI SysEx).
+    Build it with <code>ENABLE_DUB_PREAMP=1 ./build.sh</code>, then pin it with <code>node tools/web_emu/pkg_manifest.mjs</code>.
+    Chrome or Edge; connect the FM-1 straight to this computer and close other MIDI apps. Do not unplug it while writing.
+    If an install ever fails and the FM-1 does not start, recovering it needs a Transporter. Custom firmware, no warranty.</p>
+  <p class="status" id="fl-status">loading the package...</p>
+  <progress id="fl-bar" max="100" value="0"></progress>
+  <div class="row">
+    <span class="hint" id="fl-pkg" style="margin:0"></span>
+    <button class="big" id="fl-go" disabled>FLASH SUITE TO HARDWARE</button>
+  </div>
+  <pre id="log"></pre>
+</section>
+
+<footer>Based on SLOOP + Felucca (GPL-3.0, no warranty). The FM-1 shell's geometry and the installer's handshake follow
+  Hortator (DEADACTIVE, GPL-3.0). The protocol scripts are SLOOP's
   (<a href="../../web/index_pkg.html">web/index_pkg.html</a>), unchanged.</footer>
 
 <script type="module" src="app.js"></script>
