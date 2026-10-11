@@ -547,6 +547,9 @@ static void dsu_boot(void);
 
 static void persist_boot(void)                    /* before settings_init / panel_init */
 {
+#ifdef ENABLE_DUB_PREAMP
+    dub_ctl_defaults();                            /* (no flash: they stay) */
+#endif
 #if FELUCCA_ARRANGER
     arr_defaults(&arrangement);
 #endif
@@ -555,6 +558,9 @@ static void persist_boot(void)                    /* before settings_init / pane
     uint32_t f = irq_save();
     flash_ok = FL_FAR(fl_jedec_ram)() == 0x856014u;       /* the expected 1 MiB part, else stay RAM-only */
     irq_restore(f);
+#ifdef ENABLE_DUB_PREAMP
+    dub_persist_boot();                            /* the preamp's own record (0xFB000) */
+#endif
     if (!flash_ok)
         return;
     fl_plain_window_init();                        /* flash above 0x93000 reads as plaintext through XIP
@@ -670,6 +676,9 @@ static void settings_save(void)
     persist_t p;
     if (!flash_ok)
         return;
+#ifdef ENABLE_DUB_PREAMP
+    dub_persist_save();                            /* its own sector, when changed (a failure: tried again later) */
+#endif
     persist_fill(&p);
     if (!memcmp(&p, &persist_saved, sizeof p))
         return;                                    /* unchanged: no erase cycle */
@@ -849,6 +858,10 @@ static void sections_flush(void)                        /* main loop */
         lights_min = (uint8_t)(song.g[G_ROUTE] != 0);
         settings_later = 1;
     }
+#if defined(ENABLE_DUB_PREAMP) && FELUCCA_FLASH
+    if (flash_ok && dub_persist_changed())              /* the preamp's settings: the same, once quiet */
+        settings_later = 1;
+#endif
     if (settings_later) {                               /* the menu closed while playing */
         settings_later = 0;
         song_dirty = 1;                                 /* (settings_save when quiet, with the song) */

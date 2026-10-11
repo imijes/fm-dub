@@ -2268,6 +2268,10 @@ static void events_block(uint32_t n)
             mclk_event((pkt >> 8) & 0xFFu, ((pkt >> 4) & 15u) ? 2u : 1u);
             continue;
         }
+#ifdef ENABLE_DUB_PREAMP
+        if (dub_midi_take(pkt))                       /* the dub preamp's channel: none of it reaches the tracks */
+            continue;
+#endif
         if (st == 0xB0u) {                            /* a CC (IN = CLOCK: none) */
             if (!song.g[G_ROUTE])
                 midi_cc(midi_track(ch), d1, d2);

@@ -4,14 +4,28 @@
  * AUDIO (LOWCUT, USB AUDIO, USB SERIAL), SYSTEM (HARDWARE CALIBRATION, ABOUT). SELECT goes to the section
  * before / after (stopping at the ends), KNOB 1..3 set the section's settings in order (the knob's colour marks
  * its row), PRESETS moves the cursor; OCT+ steps the cursor's setting round or opens it (CALIBRATION, ABOUT),
- * OCT- closes (from ABOUT: back to the section). */
+ * OCT- closes (from ABOUT: back to the section).
+ * ENABLE_DUB_PREAMP: a DUB section before SYSTEM (MIDI CH, PREAMP, DEFAULTS: dub_preamp/dub_menu_extensions.c). */
 /* ------------------------------------------------------------ menu --- */
+#ifdef ENABLE_DUB_PREAMP
+enum { MI_COLOR, MI_ZOOM, MI_LIGHTS, MI_KEYS, MI_NOTES, MI_LOWCUT, MI_USB, MI_SERIAL, MI_DUBCH, MI_DUBON, MI_DUBRST,
+       MI_PANEL, MI_ABOUT, MI_COUNT };
+static const char *const MI_NAME[MI_COUNT] = {"COLOR", "ZOOM", "LIGHTS", "KEYS", "NOTES", "SPEAKER LOWCUT", "USB AUDIO",
+                                              "USB SERIAL", "MIDI CH", "PREAMP", "DEFAULTS", "HARDWARE CALIBRATION",
+                                              "ABOUT"};
+enum { MS_SCREEN, MS_LIGHTS, MS_AUDIO, MS_DUB, MS_SYSTEM, MS_COUNT };
+static const char *const MS_NAME[MS_COUNT] = {"SCREEN", "LIGHTS", "AUDIO", "DUB", "SYSTEM"};
+static const uint8_t MS_FIRST[MS_COUNT + 1] = {MI_COLOR, MI_LIGHTS, MI_LOWCUT, MI_DUBCH, MI_PANEL, MI_COUNT};
+#define MS_GAP 6                                   /* the tabs' spacing: five fit in 240 */
+#else
 enum { MI_COLOR, MI_ZOOM, MI_LIGHTS, MI_KEYS, MI_NOTES, MI_LOWCUT, MI_USB, MI_SERIAL, MI_PANEL, MI_ABOUT, MI_COUNT };
 static const char *const MI_NAME[MI_COUNT] = {"COLOR", "ZOOM", "LIGHTS", "KEYS", "NOTES", "SPEAKER LOWCUT", "USB AUDIO",
                                               "USB SERIAL", "HARDWARE CALIBRATION", "ABOUT"};
 enum { MS_SCREEN, MS_LIGHTS, MS_AUDIO, MS_SYSTEM, MS_COUNT };
 static const char *const MS_NAME[MS_COUNT] = {"SCREEN", "LIGHTS", "AUDIO", "SYSTEM"};   /* (AUDIO: and USB) */
 static const uint8_t MS_FIRST[MS_COUNT + 1] = {MI_COLOR, MI_LIGHTS, MI_LOWCUT, MI_PANEL, MI_COUNT};   /* rows of each */
+#define MS_GAP 10
+#endif
 static const char *const LIGHTS_NAME[LIGHTS_N] = {"OFF", "LOW", "MID", "HIGH"};   /* every button lit, the labels readable */
 static const char *const KEYS_NAME[KEYS_N] = {"OFF", "C KEYS", "WHITE KEYS", "ALL KEYS"};      /* keys lit too, at the LIGHTS level */
 #define MI_Y0 26                                   /* the first row, under the section tabs */
@@ -29,6 +43,13 @@ static uint32_t mi_row(uint32_t i) { return i - MS_FIRST[mi_sec(i)]; }   /* its 
 /* item i's value as shown, and its colour */
 static const char *mi_value(uint32_t i, uint16_t *c)
 {
+#ifdef ENABLE_DUB_PREAMP
+    {
+        const char *d = dub_mi_value(i, c);
+        if (d)
+            return d;
+    }
+#endif
     *c = C_HI;
     switch (i) {
     case MI_COLOR: return PALETTES[settings.palette].name;
@@ -53,6 +74,9 @@ static void draw_menu(void)
     uint32_t sig = ui.menu * 7u + ui.menu_sel * 131u + settings.palette * 1009u + settings.lowcut * 7919u +
                    settings.zoom * 104729u + lights_lvl * 1299709u + lights_keys * 15485863u +
                    lights_notes * 32452843u + usb_full * 49979687u + usb_serial * 86028121u;
+#ifdef ENABLE_DUB_PREAMP
+    sig += dub_menu_sig();
+#endif
     if (!ui.force && sig == ui.menu_sig)
         return;
     ui.menu_sig = sig;
@@ -98,7 +122,7 @@ static void draw_menu(void)
                 if (i == sec)
                     cv_rect(x - 2, 3, w + 4, 18, C_LINE);
                 cv_text(x, 4, &FONT_S, MS_NAME[i], i == sec ? C_WHITE : C_DIM);
-                x += w + 10;
+                x += w + MS_GAP;
             }
             for (i = MS_FIRST[sec]; i < MS_FIRST[sec + 1u]; i++) {
                 uint32_t r = i - MS_FIRST[sec];
@@ -154,6 +178,10 @@ static void menu_close(void)
 /* item i: a knob turned s (> 0 right, < 0 left), or 0: OCT+ (steps round, toggles, or opens) */
 static void mi_set(uint32_t i, int32_t s)
 {
+#ifdef ENABLE_DUB_PREAMP
+    if (dub_mi_set(i, s))
+        return;
+#endif
     switch (i) {
     case MI_COLOR:                                     /* both ways round; OCT+ the next */
         settings.palette = (settings.palette + (s < 0 ? NPALETTES - 1u : 1u)) % NPALETTES;

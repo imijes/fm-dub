@@ -178,6 +178,9 @@ static void fm1_main(void)
         uint32_t m = fm1_ms;
         fm1_wdt_feed();
         usb_retry(fm1_ms);
+#ifdef ENABLE_DUB_PREAMP
+        dub_mq_apply();                                 /* the preamp's MIDI CCs (dub_midi.c) */
+#endif
         if ((uint32_t)(m - healthy_since) >= 30000u && bootguard.pending) {
             bootguard_clear(&bootguard);     /* 30 s of this boot, even if TIMER4 survived reset */
         }

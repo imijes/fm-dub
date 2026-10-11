@@ -17,6 +17,9 @@
 #include "lcd.c"
 #include "gfx.c"
 #include "core.h"
+#ifdef ENABLE_DUB_PREAMP
+#include "dub_preamp/dub_shared_state.h"   /* the preamp's state, UI <-> audio ISR */
+#endif
 #include "engines.c"
 #include "drums.c"
 #include "params.c"
@@ -42,6 +45,14 @@
 #define FELUCCA_UAC_TONE 0       /* bench: the USB input sends test triangles instead of the music */
 #endif
 #include "usb.c"
+#ifdef ENABLE_DUB_PREAMP
+#include "dub_preamp/dub_crossover.c"          /* 3.1: the 4-way LR4 crossover, kills, band meters */
+#include "dub_preamp/dub_tubby_filter.c"      /* 3.2: the stepped high-pass (the big knob) */
+#include "dub_preamp/dub_effects.c"           /* 3.3: saturation, siren, echo, spring */
+#include "dub_preamp/dub_limiter.c"           /* 3.4: the sub bloom, the safety limiter */
+#include "dub_preamp/dub_midi.c"              /* the preamp's MIDI channel and CC map */
+#include "dub_preamp/dub_mixer_intercept.c"   /* the preamp's place in mix_block (fx.c): the sum bus */
+#endif
 #ifndef FELUCCA_UART
 #define FELUCCA_UART 1           /* TRS MIDI IN on UART1 (3.5 mm jack) */
 #endif
@@ -120,6 +131,9 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)
 #endif
 #include "upreset.c"          /* user presets (RAM mirror; flash with FELUCCA_FLASH) */
 #include "project.c"
+#ifdef ENABLE_DUB_PREAMP
+#include "dub_preamp/dub_menu_extensions.c"   /* menu DUB, the preamp settings in flash */
+#endif
 #if FELUCCA_OTA
 static uint8_t recovery_active;
 #define OTA_IDENTITY (recovery_active ? "FM-1_000" : FELUCCA_ID)

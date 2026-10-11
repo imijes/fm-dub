@@ -516,8 +516,13 @@ static void mix_block(int32_t *out, uint32_t n)
         mix_r[i] += wet_r[i];
     }
     dust_process(mix_l, mix_r, n);
+#ifndef ENABLE_DUB_PREAMP
     punch_process(mix_l, mix_r, n);
+#endif                                                  /* (the dub preamp: its memory is the echo's; 4.2 remaps them) */
     djf_process(mix_l, mix_r, n);
+#ifdef ENABLE_DUB_PREAMP
+    dub_mix_intercept(mix_l, mix_r, n);                 /* the dub preamp: the whole mix (+ USB playback), before MASTER */
+#endif
     m1 = (int32_t)song.master_q12;
     m0 = master_cur < 0 ? m1 : master_cur;
     master_cur = m1;

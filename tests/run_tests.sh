@@ -38,6 +38,8 @@ mkdir -p build/gen
 
 $CC -o "$OUT/storage_test" tests/storage_test.c
 run "flash storage (A/B, torn writes)" "$OUT/storage_test"
+$CC -o "$OUT/dub_menu_test" tests/dub_menu_test.c
+run "dub preamp: shared state, menu DUB, settings record (torn writes, clamping)" "$OUT/dub_menu_test"
 
 $CC -o "$OUT/recovery_test" tests/recovery_test.c
 run "application USB recovery and boot-loop guard" "$OUT/recovery_test"
@@ -101,6 +103,18 @@ $CC -DT_CDC=0 -DHALF_FRAMES=$HALF -o "$OUT/uac_test_nocdc" tests/uac_test.c -lm
 run "USB audio input: descriptors (without CDC), ring and packets" "$OUT/uac_test_nocdc"
 $CC -DT_CDC=2 -DHALF_FRAMES=$HALF -o "$OUT/uac_test_seroff" tests/uac_test.c -lm
 run "USB audio input: descriptors (CDC built in, menu USB SERIAL OFF), ring and packets" "$OUT/uac_test_seroff"
+$CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_xover_test" tests/dub_xover_test.c -lm
+run "dub preamp crossover: LR4 bands, flat sum, kills, meters, clamp, bypass, mono low end" "$OUT/dub_xover_test"
+$CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_tubby_test" tests/dub_tubby_test.c -lm
+run "dub preamp big knob: FLAT, 10 steps, 18 dB / oct, resonance, click, fades" "$OUT/dub_tubby_test"
+$CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_fx_test" tests/dub_fx_test.c -lm
+run "dub preamp effects: saturation, echo (time, feedback, freeze, throw, echo>rev, alias), spring, siren, MIDI, intercept" "$OUT/dub_fx_test"
+$CC -Ibuild/gen -Ifirmware/src -o "$OUT/dub_limiter_test" tests/dub_limiter_test.c -lm
+run "dub preamp sub bloom (downbeat, tracking, lock, gate, fades) and limiter (look-ahead, ceiling, release)" "$OUT/dub_limiter_test"
+for c in 0 1 2; do
+    $CC -DT_CDC=$c -DHALF_FRAMES=$HALF -o "$OUT/dub_usb_test_$c" tests/dub_usb_test.c -lm
+    run "dub preamp USB playback (T_CDC=$c): descriptors, ring, clock drift, stop / restart" "$OUT/dub_usb_test_$c"
+done
 run "USB SERIAL OFF: the descriptors of a build without CDC, byte for byte" \
     sh -c "[ \"\$(UAC_DUMP=1 '$OUT/uac_test_seroff' | tail -n 2)\" = \"\$(UAC_DUMP=1 '$OUT/uac_test_nocdc' | tail -n 2)\" ] && echo same"
 uac_in_app() { ${CC%% *} -E -Ibuild/gen -Ifirmware/hal -Ifirmware/src firmware/src/felucca.c 2>/dev/null | grep -q uac_service; }

@@ -50,8 +50,16 @@ static inline void *fl_far(void *p) { void *volatile q = p; return q; }
 #define FL_IN(off, n, lo, hi) ((uint32_t)(off) >= (lo) && (uint32_t)(off) <= (hi) && \
                                (uint32_t)(n) <= (hi) - (uint32_t)(off))
 /* Felucca's own store (projects, user samples; settings; the FM6 bank) */
+#ifdef ENABLE_DUB_PREAMP
+#define FL_DUB_LO       0x000FB000u                /* the dub preamp settings (dub_menu_extensions.c), one sector */
+#define FL_DUB_HI       0x000FC000u
+#define FL_DUB_OK(off, n) FL_IN(off, n, FL_DUB_LO, FL_DUB_HI)
+#else
+#define FL_DUB_OK(off, n) 0
+#endif
 #define FL_STORE_OK(off, n) (FL_IN(off, n, FL_DATA_LO, FL_DATA_HI) || FL_IN(off, n, FL_GLOB_LO, FL_GLOB_HI) || \
-                             FL_IN(off, n, FL_FM6_LO, FL_FM6_HI) || FL_IN(off, n, FL_USR4_LO, FL_USR4_HI))
+                             FL_IN(off, n, FL_FM6_LO, FL_FM6_HI) || FL_IN(off, n, FL_USR4_LO, FL_USR4_HI) || \
+                             FL_DUB_OK(off, n))
 /* Where the RAM driver may erase / program. The app build allows only its own
  * data regions; the update loader (firmware/loader) defines its own window. */
 #ifndef FL_RANGE_OK

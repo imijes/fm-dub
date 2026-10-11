@@ -31,6 +31,9 @@ static struct { volatile uint32_t notes, buttons; } fm1_in;
 static void fm1_irq_off(void) {}                 /* (the host: one thread) */
 static void fm1_irq_on(void) {}
 #include "../firmware/src/core.h"
+#ifdef ENABLE_DUB_PREAMP                              /* the dub preamp fork, as felucca.c includes it */
+#include "../firmware/src/dub_preamp/dub_shared_state.h"
+#endif
 #include "../firmware/src/engines.c"
 #include "../firmware/src/drums.c"
 #include "../firmware/src/params.c"
@@ -39,6 +42,14 @@ static void fm1_irq_on(void) {}
 #include "../firmware/src/fx.c"
 static void fm1_delay_ms(uint32_t ms) { (void)ms; }
 #include "../firmware/src/usb.c"
+#ifdef ENABLE_DUB_PREAMP
+#include "../firmware/src/dub_preamp/dub_crossover.c"
+#include "../firmware/src/dub_preamp/dub_tubby_filter.c"
+#include "../firmware/src/dub_preamp/dub_effects.c"
+#include "../firmware/src/dub_preamp/dub_limiter.c"
+#include "../firmware/src/dub_preamp/dub_midi.c"
+#include "../firmware/src/dub_preamp/dub_mixer_intercept.c"
+#endif
 #include "../firmware/src/midi_uart.c"                /* TRS MIDI IN: its parser (um_byte) feeds midi_in_q */
 #if FELUCCA_ARRANGER
 #include "../firmware/src/arranger.c"
