@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# The public web console on GitHub Pages: the dub preamp FM-1 in the browser (tools/web_emu/) and its installer.
+#   1. the generated headers (tools/build.py generate(): fonts, icons, tables, samples, kits; Python + Pillow)
+#   2. the firmware package (JieLi toolchain + AC79 SDK, ENABLE_DUB_PREAMP=1 ./build.sh). Best effort: both come
+#      from JieLi's own servers; when they cannot be reached the site ships without a package and its installer
+#      says so (pkg.json { available: false }), the console runs all the same
+#   3. the WebAssembly firmware (tools/web_emu/build_emu.sh: Emscripten in Docker) and its smoke tests
+#   4. the site (tools/web_emu/make_site.sh: the repository's layout, so every relative path resolves; then
+#      site_check.mjs fails the run on any missing reference), uploaded and deployed to Pages
+# One-time setup: Settings -> Pages -> Source: "GitHub Actions". The github-pages environment deploys from the
+# default branch (main) unless another branch is allowed in Settings -> Environments -> github-pages.
+name: Deploy web console
+
+on:
+  push:
+    branches: [main]
+    paths: [tools/web_emu/**, firmware/**, web/fm1ota.js, web/fm1pkg.js, tests/hostsim.c, tools/*.py, .github/workflows/deploy.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:                                     # one deployment at a time; a newer push wins
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install Pillow
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Generated headers
+        run: python3 -c "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"
+
+      # ---- the firmware package (best effort)
+      - name: Cache the JieLi toolchain and SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.jieli
+            ~/fw-AC79_AIoT_SDK
+          key: jieli-ac79-v1.2.1
+      - name: JieLi toolchain and AC79 SDK
+        id: deps
+        continue-on-error: true
+        run: |
+          [ -x ~/.jieli/toolchain/pi32v2/bin/clang ] || tools/get_toolchain.sh
+          [ -f ~/fw-AC79_AIoT_SDK/cpu/wl82/tools/uboot.boot ] || git clone --depth 1 \
+              --branch AC79NN_SDK_V1.2.1_2023-12-13 https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK
+      - name: Firmware package (ENABLE_DUB_PREAMP=1 ./build.sh)
+        id: firmware
+        if: steps.deps.outcome == 'success'
+        continue-on-error: true
+        run: ENABLE_DUB_PREAMP=1 ./build.sh
+      - name: No package this time
+        if: steps.firmware.outcome != 'success'
+        run: |
+          rm -f build/felucca.fwsc
+          echo "::warning::No firmware package built: the site ships without one (its installer says so)."
+
+      # ---- the WebAssembly firmware and its checks
+      - name: WebAssembly (tools/web_emu/build_emu.sh, Emscripten in Docker)
+        run: sh tools/web_emu/build_emu.sh
+      - name: Smoke test (emu_smoke.mjs)
+        run: node tools/web_emu/emu_smoke.mjs
+      - name: Page modules (web_smoke.mjs)
+        if: steps.firmware.outcome == 'success'
+        run: node tools/web_emu/web_smoke.mjs
+
+      # ---- the site
+      - name: Site (make_site.sh, every reference checked)
+        run: sh tools/web_emu/make_site.sh build/site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}tools/web_emu/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

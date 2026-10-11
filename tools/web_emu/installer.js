@@ -19,7 +19,7 @@ export const STEPS_TOTAL = 74 + 1179;                      // reads: step 1 (ver
 const IS_OTA = (id) => /^ota-/i.test(id.model);
 
 // the errors' codes: fm1ota.js's (notfound, model, stopped, noloader, lost, noreturn, mismatch, badreq, foreign)
-// and the package's own (http, product, sha, nopin)
+// and the package's own (http, product, sha, nopin, nopkg)
 export function fail(code, msg, detail = "") { const e = new Error(msg); e.code = code; e.detail = detail; return e; }
 
 export async function sha256hex(bytes, subtle = globalThis.crypto && globalThis.crypto.subtle) {
@@ -27,8 +27,14 @@ export async function sha256hex(bytes, subtle = globalThis.crypto && globalThis.
   return [...new Uint8Array(await subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// the package and its pin -> { product, size, sha256, image, built } (image: what the FM-1 reads, fm1pkg.js)
+// the pin, then the package -> { product, size, sha256, image, built } (image: what the FM-1 reads, fm1pkg.js).
+// The pin comes first: a deployment without a firmware package says so in pkg.json ({ available: false, reason })
+// and the package is never asked for (no 404 on the public site)
 export async function loadPackage(fetchFn, pkgUrl, pinUrl) {
+  const p = await fetchFn(pinUrl, { cache: "no-store" });
+  if (!p.ok) throw fail("nopin", `${pinUrl}: HTTP ${p.status} (pin the build: node tools/web_emu/pkg_manifest.mjs)`);
+  const pin = await p.json();
+  if (pin.available === false) throw fail("nopkg", pin.reason || "no firmware package in this deployment");
   const r = await fetchFn(pkgUrl, { cache: "no-store" });
   if (!r.ok) throw fail("http", `${pkgUrl}: HTTP ${r.status} (build it: ENABLE_DUB_PREAMP=1 ./build.sh)`);
   const pkg = new Uint8Array(await r.arrayBuffer());
@@ -36,9 +42,6 @@ export async function loadPackage(fetchFn, pkgUrl, pinUrl) {
   try { product = productOf(pkg); } catch (e) { throw fail("product", e.message); }
   if (!PRODUCT_RE.test(product)) throw fail("product", `not a SLOOP package (${product || "no identity"})`, product);
   const sha256 = await sha256hex(pkg);
-  const p = await fetchFn(pinUrl, { cache: "no-store" });
-  if (!p.ok) throw fail("nopin", `${pinUrl}: HTTP ${p.status} (pin the build: node tools/web_emu/pkg_manifest.mjs)`);
-  const pin = await p.json();
   if (pin.sha256 !== sha256 || pin.size !== pkg.length || pin.product !== product)
     throw fail("sha", `the package is not the pinned build (sha256 ${sha256.slice(0, 12)}, pinned ${String(pin.sha256).slice(0, 12)}): ` +
       "rebuild, then node tools/web_emu/pkg_manifest.mjs", sha256);
@@ -88,7 +91,7 @@ export const ERR_TEXT = {
   foreign: "the FM-1 is in the update mode of another firmware: finish that update with its own updater: ",
   stopped: "stopped part way: replug and press again.",
   badreq: "the FM-1 asked for something outside the package: replug and press again.",
-  http: "", product: "", sha: "", nopin: "",
+  http: "", product: "", sha: "", nopin: "", nopkg: "",
 };
 export const errorText = (e) => (e && e.code && e.code in ERR_TEXT ? (ERR_TEXT[e.code] || "") + (ERR_TEXT[e.code] ? e.detail || "" : e.message)
   : `error: ${e && e.message}`);

@@ -28,7 +28,8 @@ const rejects = async (p, code) => { try { await p; return false; } catch (e) { 
 const bytes = readFileSync(join(root, "build", "felucca.fwsc"));
 const pin = JSON.parse(readFileSync(join(here, "pkg.json"), "utf8"));
 const resp = (body, ok = true) => ({ ok, status: ok ? 200 : 404, arrayBuffer: async () => body, json: async () => body });
-const fetchOf = (pkgBody, pinBody) => async (url) => (url.endsWith(".fwsc") ? resp(pkgBody) : pinBody ? resp(pinBody) : resp(null, false));
+const asked = [];
+const fetchOf = (pkgBody, pinBody) => async (url) => { asked.push(url); return url.endsWith(".fwsc") ? resp(pkgBody) : pinBody ? resp(pinBody) : resp(null, false); };
 const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length);
 const pkg = await loadPackage(fetchOf(buf, pin), "build/felucca.fwsc", "pkg.json");
 console.log(`  build/felucca.fwsc: ${pkg.product}, ${pkg.size} B, sha256 ${pkg.sha256}`);
@@ -37,6 +38,10 @@ check("package: a SLOOP identity, the pinned size and SHA-256",
 check("package: the logical image is the .fwsc without its 20 marker bytes", pkg.image.length === bytes.length - 20);
 check("package: a stale pin (another digest) is refused", await rejects(loadPackage(fetchOf(buf, { ...pin, sha256: "0".repeat(64) }), "a.fwsc", "p"), "sha"));
 check("package: no pin is refused", await rejects(loadPackage(fetchOf(buf, null), "a.fwsc", "p"), "nopin"));
+asked.length = 0;
+check("package: a site without a package (pkg.json available: false): said, the .fwsc never fetched (no 404)",
+  await rejects(loadPackage(fetchOf(buf, { available: false, reason: "none" }), "a.fwsc", "p"), "nopkg") &&
+  asked.length === 1 && asked[0] === "p");
 const other = new Uint8Array(bytes);
 for (let i = 0; i < 20; i++) other[i * 0x30 + 0x2f] = 0x7d;          // no identity
 check("package: a package without a SLOOP identity is refused", await rejects(loadPackage(fetchOf(other.buffer, pin), "a.fwsc", "p"), "product"));

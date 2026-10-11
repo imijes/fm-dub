@@ -20,6 +20,6 @@ docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src "$IMAGE" \
     -sALLOW_MEMORY_GROWTH=1 -sEXPORTED_FUNCTIONS="$EXPORTS" \
     -sEXPORTED_RUNTIME_METHODS='["HEAP8","HEAPU8","HEAPU16","HEAPF32"]'
 ls -l tools/web_emu/preamp_emu.js tools/web_emu/preamp_emu.wasm
-if [ -f build/felucca.fwsc ] && command -v node >/dev/null 2>&1; then
-    node tools/web_emu/pkg_manifest.mjs                 # the installer's pin of the build (installer.js)
+if command -v node >/dev/null 2>&1; then
+    node tools/web_emu/pkg_manifest.mjs                 # the installer's pin of the build, or of no build (installer.js)
 fi
