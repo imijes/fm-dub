@@ -4,7 +4,9 @@
  * Stereo dry mix; the chorus and the reverb come back in stereo, the delay in the middle. */
 #define DLY_LEN 65536u           /* 1.49 s: 1/4 down to 41 BPM, 1/8 dotted down to 31 (clamped below) */
 #define CHO_LEN 2048u
+#ifndef ENABLE_DUB_PREAMP                  /* (the dub preamp: its tape echo and spring are the delay and the reverb) */
 static int16_t dly_buf[DLY_LEN] __attribute__((section(".pool")));
+#endif
 static int16_t cho_buf[CHO_LEN] __attribute__((section(".pool")));
 /* the reverb: two input diffusers, then four delay lines mixed by a Hadamard matrix (a feedback delay
  * network: every echo feeds all four, so it thickens instead of ringing like a comb), damped in the
@@ -12,8 +14,10 @@ static int16_t cho_buf[CHO_LEN] __attribute__((section(".pool")));
 #define REV_MOD 12               /* samples the modulated line moves (+-) */
 static const uint16_t REV_LINE[4] = {1559, 1931, 2389, 2791};   /* 35..63 ms, coprime */
 static const uint16_t REV_AP[2] = {556, 441};
+#ifndef ENABLE_DUB_PREAMP
 static int16_t rev_line[1559 + 1931 + 2389 + 2791 + REV_MOD + 2];   /* (.bss: the pool is full) */
 static int16_t rev_ap[556 + 441] __attribute__((section(".pool")));
+#endif
 static struct {
     uint32_t dly_w, cho_w, cho_ph, rev_ph;
     int32_t dly_lp;
@@ -56,8 +60,17 @@ static void track_dist(track_t *t, int32_t *b, uint32_t n)
  * get quieter instead of crushed. */
 #define LIM_T 18000
 static int32_t lim_env = LIM_T;
-static volatile uint8_t fx_lowcut;     /* settings: 12 dB/oct ~110 Hz for the small speaker */
-static int32_t lc_l1, lc_l2, lc_r1, lc_r2, dc_l, dc_r, dce_l, dce_r;
+#ifdef ENABLE_DUB_PREAMP
+/* settings (MENU SPEAKER EQ, Phase 5): 0 FLAT, 1 LOW CUT 12 dB/oct ~110 Hz, 2 BASS+ (the small speaker): 12 dB/oct
+ * ~220 Hz plus the harmonics of the bass (spk_bass). Felucca 1.0.2's, as Hortator (DEADACTIVE/hortator) carries it */
+#define LOWCUT_N 3u
+#define LOWCUT_MODE(v) ((uint8_t)((v) < LOWCUT_N ? (v) : 0u))
+#else
+#define LOWCUT_N 2u                           /* settings: 12 dB/oct ~110 Hz for the small speaker */
+#define LOWCUT_MODE(v) ((uint8_t)((v) != 0u))
+#endif
+static volatile uint8_t fx_lowcut;
+static int32_t lcs[4], dc_l, dc_r, dce_l, dce_r;    /* (lcs: left 1, 2, right 1, 2) */
 
 /* DC blocker (~2 Hz), always on: a leaky integrator of the input (Q6 state) subtracted from it.
  * The >> 12 step keeps its remainder (error feedback, 0..4095) and adds it to the next one, so no
@@ -73,12 +86,64 @@ static inline int32_t dc_block(int32_t x, int32_t *dc, int32_t *err)
 }
 
 static int32_t lce[4];
-static inline int32_t lowcut1(int32_t x, int32_t *lc, int32_t *err)   /* x minus its one-pole low-pass */
+/* x minus its one-pole low-pass: sh 6 ~110 Hz (LOW CUT), 5 ~220 Hz (BASS+) */
+static inline int32_t lowcut1(int32_t x, int32_t *lc, int32_t *err, uint32_t sh)
 {
-    int32_t e = x - *lc + *err, d = e >> 6;
-    *err = e - (d << 6);
+    int32_t e = x - *lc + *err, d = e >> sh;
+    *err = e - (d << sh);
     *lc += d;
     return x - *lc;
+}
+
+#ifdef ENABLE_DUB_PREAMP
+/* BASS+ (Felucca 1.0.2, GPL-3.0, Leo Kuroshita / Hügelton Instruments; taken from DEADACTIVE/hortator's fx.c as it
+ * is, integers only): what the speaker cannot play, heard through its harmonics. The bass below ~150 Hz is clipped at
+ * its own envelope (a level-following trapezoid: odd harmonics), then band-passed ~220 Hz..1 kHz and added. The
+ * low-pass has 4 poles (with 2, the trapezoid rebuilt the 300 .. 600 Hz of the mix itself, late, and cancelled up to
+ * 6 dB of it). One state for the speaker (master_out), one for the USB render (master_out_usb) */
+typedef struct {
+    int32_t lp1, lp2, lp3, lp4, env, h1, h2, hl;
+} spk_bass_t;
+static spk_bass_t spk_dac, spk_usb;
+static inline int32_t spk_bass(spk_bass_t *b, int32_t m)
+{
+    int32_t a, t, u;
+    b->lp1 += ((m - b->lp1) * 692) >> 15;
+    b->lp2 += ((b->lp1 - b->lp2) * 692) >> 15;
+    b->lp3 += ((b->lp2 - b->lp3) * 692) >> 15;
+    b->lp4 += ((b->lp3 - b->lp4) * 692) >> 15;
+    a = b->lp4 < 0 ? -b->lp4 : b->lp4;
+    if (a > b->env)
+        b->env += (a - b->env) >> 2;
+    else if (b->env > 0)
+        b->env -= (b->env >> 11) + 1;
+    t = clamp(b->lp4 * 8, -b->env, b->env);
+    b->h1 += (t - b->h1) >> 5;
+    u = t - b->h1;
+    b->h2 += (u - b->h2) >> 5;
+    u -= b->h2;
+    b->hl += (u - b->hl) >> 3;
+    return b->hl * 3;
+}
+#endif
+
+/* the speaker EQ on a stereo sample (the very end of the chain, before the output limiter): 1 LOW CUT, 2 BASS+ */
+static inline void speaker_eq(int32_t *l, int32_t *r, int32_t *lc, int32_t *err, void *bs)
+{
+    uint32_t sh = 6u;
+    int32_t b = 0;
+#ifdef ENABLE_DUB_PREAMP
+    if (fx_lowcut == 2u) {
+        sh = 5u;
+        b = spk_bass((spk_bass_t *)bs, (*l + *r) >> 1);
+    }
+#else
+    (void)bs;
+#endif
+    *l = lowcut1(*l, &lc[0], &err[0], sh);
+    *l = lowcut1(*l, &lc[1], &err[1], sh) + b;
+    *r = lowcut1(*r, &lc[2], &err[2], sh);
+    *r = lowcut1(*r, &lc[3], &err[3], sh) + b;
 }
 
 /* the output stage: linear up to KNEE (a clean low end: no tanh harmonics on a loud sine), above it
@@ -108,12 +173,12 @@ static void master_out_usb(int32_t *l, int32_t *r)
     int32_t al, ar, a;
     *l = dc_block(*l, &uo.dc[0], &uo.dce[0]);
     *r = dc_block(*r, &uo.dc[1], &uo.dce[1]);
-    if (fx_lowcut) {
-        *l = lowcut1(*l, &uo.lc[0], &uo.lce[0]);
-        *l = lowcut1(*l, &uo.lc[1], &uo.lce[1]);
-        *r = lowcut1(*r, &uo.lc[2], &uo.lce[2]);
-        *r = lowcut1(*r, &uo.lc[3], &uo.lce[3]);
-    }
+    if (fx_lowcut)
+#ifdef ENABLE_DUB_PREAMP
+        speaker_eq(l, r, uo.lc, uo.lce, &spk_usb);
+#else
+        speaker_eq(l, r, uo.lc, uo.lce, 0);
+#endif
     al = *l < 0 ? -*l : *l;
     ar = *r < 0 ? -*r : *r;
     a = al > ar ? al : ar;
@@ -135,12 +200,12 @@ static inline void master_out(int32_t *l, int32_t *r)
     int32_t al, ar, a;
     *l = dc_block(*l, &dc_l, &dce_l);
     *r = dc_block(*r, &dc_r, &dce_r);
-    if (fx_lowcut) {                  /* two one-pole high-passes, error feedback as dc_block (the */
-        *l = lowcut1(*l, &lc_l1, &lce[0]);          /* rounded step stopped at |x - lc| < 32: an offset) */
-        *l = lowcut1(*l, &lc_l2, &lce[1]);
-        *r = lowcut1(*r, &lc_r1, &lce[2]);
-        *r = lowcut1(*r, &lc_r2, &lce[3]);
-    }
+    if (fx_lowcut)                    /* two one-pole high-passes, error feedback as dc_block (the */
+#ifdef ENABLE_DUB_PREAMP                /* rounded step stopped at |x - lc| < 32: an offset); BASS+ */
+        speaker_eq(l, r, lcs, lce, &spk_dac);
+#else
+        speaker_eq(l, r, lcs, lce, 0);
+#endif
     al = *l < 0 ? -*l : *l;
     ar = *r < 0 ? -*r : *r;
     a = al > ar ? al : ar;
@@ -170,7 +235,11 @@ static uint32_t delay_samples(void)
 static void fx_buses(const int32_t *cho_in, const int32_t *dly_in, const int32_t *rev_in, int32_t *wet_l,
                      int32_t *wet_r, uint32_t n)
 {
+#ifdef ENABLE_DUB_PREAMP
+    uint32_t i, k, dl = 0;
+#else
     uint32_t i, k, dl = delay_samples();
+#endif
     int32_t fb = song.g[G_DFDBK] * 230, col = 2000 + song.g[G_DCOLOR] * 240;
     int32_t dmix = song.g[G_DMIX] * 258;
     int32_t g = 17000 + song.g[G_RSIZE] * 104, lpk = 32767 - song.g[G_RDAMP] * 200;   /* loop gain (RT60 ~0.4..4 s), damping */
@@ -201,6 +270,14 @@ static void fx_buses(const int32_t *cho_in, const int32_t *dly_in, const int32_t
             yr = (d0 + (((d1 - d0) * (r1 & 255)) >> 8)) << 1;
         }
         fx.cho_w++;
+#ifdef ENABLE_DUB_PREAMP
+        wet_l[i] = yl;                                  /* the dub preamp: the chorus only here (dub_effects.c: the */
+        wet_r[i] = yr;                                  /* delay and reverb sends go to its tape echo and spring) */
+        (void)dly_in, (void)rev_in, (void)x, (void)a, (void)o0, (void)o1, (void)o2, (void)o3, (void)k;
+    }
+    (void)dl, (void)fb, (void)col, (void)dmix, (void)g, (void)lpk, (void)ma, (void)mb, (void)L0, (void)B1, (void)B2, (void)B3;
+}
+#else
         /* delay with a low-passed feedback (in the middle) */
         x = dly_buf[(fx.dly_w - dl) & (DLY_LEN - 1u)];
         fx.dly_lp += mulq15(x - fx.dly_lp, col);
@@ -252,6 +329,7 @@ static void fx_buses(const int32_t *cho_in, const int32_t *dly_in, const int32_t
         wet_r[i] = yr + o1 - o3;
     }
 }
+#endif
 
 /* one block of the whole mix (shared with tests/hostsim.c): events -> each part
  * -> dist -> SLICER -> level / pan / sends -> drums (-> SLICER) -> buses -> master; out: stereo Q15 */
@@ -521,7 +599,8 @@ static void mix_block(int32_t *out, uint32_t n)
 #endif                                                  /* (the dub preamp: its memory is the echo's; 4.2 remaps them) */
     djf_process(mix_l, mix_r, n);
 #ifdef ENABLE_DUB_PREAMP
-    dub_mix_intercept(mix_l, mix_r, n);                 /* the dub preamp: the whole mix (+ USB playback), before MASTER */
+    dub_mix_intercept(mix_l, mix_r, send_d, send_r, n);   /* the dub preamp: the whole mix (+ USB playback) and the
+                                                         * delay / reverb sends (its tape echo, its spring), before MASTER */
 #endif
     m1 = (int32_t)song.master_q12;
     m0 = master_cur < 0 ? m1 : master_cur;

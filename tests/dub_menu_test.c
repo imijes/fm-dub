@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Host test of the dub preamp's Phase 1 (firmware/src/dub_preamp/): the shared state's helpers, the DUB menu
  * rows, the settings record at 0xFB000 on a simulated NOR (erased, round trip, unchanged = no erase, torn write,
- * bit rot, out-of-range values, the performance state not saved). */
+ * bit rot, out-of-range values, the performance state not saved). Phase 5: written only on DUB > SETTINGS > SAVE
+ * (a change stays in RAM; a SAVE while playing waits for the stop); DEFAULTS in RAM only. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,13 +16,15 @@
 #define NDIV_SHORT 6u
 #define NDIV_DLY 8u
 enum { G_DRCH, G_COUNT };
-static struct { int16_t g[G_COUNT]; } song;
+static struct { int16_t g[G_COUNT]; uint8_t playing; } song;
+static uint8_t transport_req;
 static struct { uint8_t force, page, home; } ui;
 static uint16_t pal[5] = {0, 1, 2, 3, 4};
 #define C_DIM pal[1]
 #define C_AMB pal[3]
 #define C_HI pal[4]
-enum { MI_DUBCH = 8, MI_DUBON, MI_DUBRST, MI_DUBTWR };
+enum { MI_DUBCH = 8, MI_DUBON, MI_DUBSET, MI_DUBTWR };
+static void settings_save(void);
 static int menu_closed, tower_opened;
 static void menu_close(void) { menu_closed++; }
 static void dub_tower_open(uint32_t page, uint32_t home) { (void)page, (void)home; tower_opened++; }
@@ -60,6 +63,12 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)
 #define __attribute__(x)                                /* (.pool and the like: as hostsim.c) */
 #include "../firmware/src/dub_preamp/dub_shared_state.h"
 #include "../firmware/src/dub_preamp/dub_menu_extensions.c"
+static void settings_save(void) { dub_persist_save(); }   /* (project.c: the SLOOP settings, then the preamp's) */
+static int save_now(void)                                 /* DUB > SETTINGS > SAVE, then the write */
+{
+    dub_save_req = 1;
+    return dub_persist_save();
+}
 
 static int check(const char *what, int ok)
 {
@@ -129,10 +138,33 @@ int main(void)
         bad += check("menu: the signature follows the channel", dub_menu_sig() != s0);
     }
     dub_ctl.bypass = 1;
-    dub_mi_set(MI_DUBRST, 1);
-    bad += check("menu: DEFAULTS ignores a knob", dub_ctl.midi_ch == 5u && dub_ctl.bypass == 1u);
-    dub_mi_set(MI_DUBRST, 0);
-    bad += check("menu: DEFAULTS on OCT+", dub_ctl.midi_ch == 11u && !dub_ctl.bypass && last_msg && ui.force);
+    erases = 0;
+    bad += check("SETTINGS: SAVE first, amber (unsaved)", !strcmp(dub_mi_value(MI_DUBSET, &c), "SAVE") && c == C_AMB);
+    dub_mi_set(MI_DUBSET, 1);
+    bad += check("SETTINGS: knob right picks DEFAULTS (nothing done)", dub_ctl.midi_ch == 5u && dub_ctl.bypass == 1u &&
+                 !strcmp(dub_mi_value(MI_DUBSET, &c), "DEFAULTS"));
+    dub_mi_set(MI_DUBSET, 0);
+    bad += check("SETTINGS: DEFAULTS on OCT+, in RAM (no flash write)", dub_ctl.midi_ch == 11u && !dub_ctl.bypass &&
+                 last_msg && ui.force && erases == 0);
+    dub_mi_set(MI_DUBSET, -1);
+    bad += check("SETTINGS: knob left back to SAVE", !strcmp(dub_mi_value(MI_DUBSET, &c), "SAVE"));
+    dub_ctl.midi_ch = 6;
+    settings_save();                              /* (the menu closing, a quiet moment: SLOOP's saves) */
+    bad += check("RAM only: SLOOP's saves do not write the preamp", erases == 0 && dub_persist_changed() &&
+                 !dub_persist_wanted());
+    song.playing = 1;
+    dub_mi_set(MI_DUBSET, 0);
+    bad += check("SAVE while playing: waits (no erase), shown waiting", erases == 0 && dub_persist_wanted() &&
+                 !strcmp(dub_mi_value(MI_DUBSET, &c), "SAVE: WAITING") && c == C_AMB);
+    song.playing = 0;
+    settings_save();                              /* (project.c sections_flush, once quiet) */
+    bad += check("... written once stopped, then saved (gray)", erases == 1 && !dub_persist_wanted() &&
+                 !dub_persist_changed() && !strcmp(dub_mi_value(MI_DUBSET, &c), "SAVE") && c == C_DIM);
+    dub_ctl.midi_ch = 12;
+    dub_mi_set(MI_DUBSET, 0);
+    bad += check("SAVE stopped: written at once", erases == 2 && !dub_persist_changed() && !strcmp(last_msg, "PREAMP SAVED"));
+    dub_ctl.midi_ch = 5;
+    dub_ctl.bypass = 1;
     dub_mi_set(MI_DUBTWR, 1);
     bad += check("menu: CONTROL TOWER ignores a knob", !menu_closed && !tower_opened);
     dub_mi_set(MI_DUBTWR, 0);
@@ -149,9 +181,9 @@ int main(void)
     dub_ctl.sub_arm = 1;
     dub_ctl.punch = DUB_PX_STUTTER;
     erases = 0;
-    bad += check("save: ok", dub_persist_save() == 0 && erases == 1);
+    bad += check("save: ok", save_now() == 0 && erases == 1);
     bad += check("save: then unchanged", !dub_persist_changed());
-    bad += check("save again unchanged: no erase", dub_persist_save() == 0 && erases == 1);
+    bad += check("save again unchanged: no erase", save_now() == 0 && erases == 1);
     dub_ctl_defaults();
     dub_persist_boot();
     bad += check("boot: the settings back",
@@ -164,15 +196,17 @@ int main(void)
     /* a torn write: the header never lands -> defaults at the next boot */
     dub_ctl.midi_ch = 9;
     fail_after = 1;                           /* the payload goes, the header does not */
-    bad += check("torn write: reported", dub_persist_save() != 0);
+    bad += check("torn write: reported", save_now() != 0);
     fail_after = -1;
-    bad += check("torn write: still unsaved", dub_persist_changed());
+    bad += check("torn write: still unsaved, the SAVE still asked (tried again)", dub_persist_changed() &&
+                 dub_persist_wanted());
+    dub_save_req = 0;
     dub_persist_boot();
     bad += check("torn write: boot falls back to the defaults", dub_ctl.midi_ch == 11u);
 
     /* bit rot in the payload */
     dub_ctl.midi_ch = 4;
-    dub_persist_save();
+    save_now();
     nor[0xFB000u + DUB_REC_PAYLOAD + 17u] ^= 0x10u;
     dub_persist_boot();
     bad += check("bit rot: CRC rejects, defaults", dub_ctl.midi_ch == 11u);
@@ -204,7 +238,7 @@ int main(void)
                      dub_ctl.echo_fb_q12 == DUB_FB_MAX && dub_ctl.drive_q12 == DUB_Q12_ONE);
         bad += check("clamped: step 10, wave SAW, div 7",
                      dub_ctl.tubby_step == 10u && dub_ctl.siren_wave == DUB_WAVE_SAW && dub_ctl.echo_div == 7u);
-        bad += check("clamped: written back at the next save", dub_persist_changed());
+        bad += check("clamped: differs from flash (SAVE writes it back)", dub_persist_changed());
     }
 
     /* no flash: defaults, nothing written */
@@ -212,7 +246,7 @@ int main(void)
     erases = 0;
     dub_persist_boot();
     bad += check("no flash: defaults, save does nothing",
-                 dub_ctl.midi_ch == 11u && dub_persist_save() == 0 && erases == 0);
+                 dub_ctl.midi_ch == 11u && save_now() == 0 && erases == 0);
 
     printf(bad ? "%d FAILED\n" : "all ok\n", bad);
     return bad != 0;

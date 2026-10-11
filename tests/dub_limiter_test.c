@@ -284,11 +284,12 @@ static void chain(void)
     song.g[G_BPM] = 120;
     dub_chain.w = 0;
     dub_chain.cold = 1;
-    dub_ctl.echo_sync = 0;
-    dub_ctl.echo_ms = 230;
+    song.g[G_DTIME] = 4;                                /* (Phase 5: SLOOP's DLY / REV pages: the tape echo, 8T) */
+    song.g[G_DFDBK] = 125;                              /* 1.25: running away */
+    song.g[G_DMIX] = 127;
+    song.g[G_DCOLOR] = 127;
+    song.g[G_RSIZE] = 127;
     dub_ctl.echo_send_q15 = 32767;
-    dub_ctl.echo_ret_q15 = 32767;
-    dub_ctl.echo_fb_q12 = DUB_FB_MAX;
     dub_ctl.rev_send_q15 = 32767;
     dub_ctl.siren_gate = 1;
     dub_ctl.siren_lvl_q15 = 32767;
@@ -298,7 +299,7 @@ static void chain(void)
         int32_t l[CTL], r[CTL];
         for (i = 0; i < CTL; i++)
             l[i] = r[i] = (int32_t)lrint(30000 * sin(2 * M_PI * 55 * (b * CTL + i) / SR));
-        dub_mix_intercept(l, r, CTL);
+        dub_mix_intercept(l, r, l, r, CTL);              /* (the sends too: the bus itself, full) */
         for (i = 0; i < CTL; i++) {
             if (abs(l[i]) > pk)
                 pk = abs(l[i]);

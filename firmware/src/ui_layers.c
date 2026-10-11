@@ -31,6 +31,14 @@ static uint8_t chain_tap[CHAIN_MAX], chain_taps;        /* the section keys tapp
 #define TAP_MS 450u                                     /* a press shorter than this, untouched: a tap */
 #define SHOW_MS 140u                                    /* the layer shows after this (a tap does not flash it) */
 
+/* the Mix grid (GLO held): the keys past mute 1..4 / solo 1..4. The dub preamp puts the computer's audio there as
+ * a fifth track (key 9 MUTE 5, key 13 SOLO 5), the CONTROL TOWER on key 10, so FILL and its NEXT BAR move to 11, 12 */
+#ifdef ENABLE_DUB_PREAMP
+enum { MIX_MUTE5 = 8, MIX_TOWER = 9, MIX_FILL = 10, MIX_BAR = 11, MIX_SOLO5 = 12 };
+#else
+enum { MIX_FILL = 8, MIX_BAR = 9 };
+#endif
+
 /* the ISR's view of the panel: the layers' buttons, OCT- / OCT+, REC / PLAY of a free take */
 static void layers_init(void)
 {
@@ -323,8 +331,8 @@ static void layer_key(uint32_t layer, uint32_t k, uint32_t down)
             ui.step_held &= (uint16_t)~(1u << w);
             if (layer == LY_STEP)
                 step_up((uint32_t)w);
-            if (layer == LY_MIX && w == 8)
-                fill_held = 0;                              /* GLO + key 9 let go: the fill ends */
+            if (layer == LY_MIX && w == MIX_FILL)
+                fill_held = 0;                              /* GLO + the FILL key let go: the fill ends */
         }
         return;
     }
@@ -412,9 +420,18 @@ static void layer_key(uint32_t layer, uint32_t k, uint32_t down)
             trk[w].p[P_MUTE] = (int16_t)!trk[w].p[P_MUTE];
         } else if (w >= 4 && w < 8) {
             song.solo ^= (uint8_t)(1u << (w - 4));
-        } else if (w == 8) {
+#ifdef ENABLE_DUB_PREAMP
+        } else if (w == MIX_MUTE5) {
+            dub_ctl.usb_mute = (uint8_t)!dub_ctl.usb_mute;  /* the computer's audio (dub_mixer_intercept.c) */
+        } else if (w == MIX_SOLO5) {
+            dub_ctl.usb_solo = (uint8_t)!dub_ctl.usb_solo;
+        } else if (w == MIX_TOWER) {
+            dub_tower_latch(ui.page, ui.home);              /* the CONTROL TOWER, latched: HOME lets it go */
+            vis_on = 0;
+#endif
+        } else if (w == MIX_FILL) {
             fill_held = 1;                                  /* FILL while held */
-        } else if (w == 9) {
+        } else if (w == MIX_BAR) {
             fill_arm = (uint8_t)!fill_arm;                  /* FILL NEXT BAR (again: cancelled) */
             ui_message(fill_arm ? "FILL: NEXT BAR" : "FILL BAR OFF");
         } else if (w == 15) {
@@ -667,6 +684,8 @@ static void layer_screen_draw(void)
             tl[i].bg = on ? C_WHITE : TE_G1;
             tl[i].fg = on ? C_BLACK : TE_G4;
             tl[i].top = on ? 0 : TE_DIM[i / 4u];
+            if (dub_fx_tile(i, (fm1_ms / 250u) & 1u, &tl[i].bg, &tl[i].fg))
+                tl[i].top = 0;                          /* pads 5..9: dark, armed (blinking), on (Phase 5) */
         }
         dub_fx_knobs(v, lab, ratio);
         break;
@@ -888,13 +907,28 @@ static void layer_screen_draw(void)
             tl[4 + i].fg = so ? C_BLACK : TE_G3;
             tl[4 + i].top = TE_DIM[i];
         }
-        str_cpy(tl[8].lab, "fill", 8);                  /* key 9: held = a fill; key 10: the next bar is one */
-        tl[8].bg = fill_now ? C_WHITE : TE_G1;
-        tl[8].fg = fill_now ? C_BLACK : TE_G4;
-        str_cpy(tl[9].lab, "bar", 8);
-        tl[9].bg = fill_bar_on ? C_WHITE : TE_G1;
-        tl[9].fg = fill_bar_on ? C_BLACK : TE_G4;
-        tl[9].top = fill_arm ? C_WHITE : 0;
+        str_cpy(tl[MIX_FILL].lab, "fill", 8);           /* held = a fill; BAR: the next bar is one */
+        tl[MIX_FILL].bg = fill_now ? C_WHITE : TE_G1;
+        tl[MIX_FILL].fg = fill_now ? C_BLACK : TE_G4;
+        str_cpy(tl[MIX_BAR].lab, "bar", 8);
+        tl[MIX_BAR].bg = fill_bar_on ? C_WHITE : TE_G1;
+        tl[MIX_BAR].fg = fill_bar_on ? C_BLACK : TE_G4;
+        tl[MIX_BAR].top = fill_arm ? C_WHITE : 0;
+#ifdef ENABLE_DUB_PREAMP
+        {                                               /* the dub preamp: the computer's audio as a fifth track */
+            int m = dub_ctl.usb_mute != 0u, so = dub_ctl.usb_solo != 0u;
+            str_cpy(tl[MIX_MUTE5].lab, "MUTE 5", 8);
+            tl[MIX_MUTE5].bg = m ? TE_G2 : TE_G4;
+            tl[MIX_MUTE5].fg = m ? TE_G3 : C_BLACK;
+            str_cpy(tl[MIX_SOLO5].lab, "SOLO 5", 8);
+            tl[MIX_SOLO5].bg = so ? C_WHITE : TE_G1;
+            tl[MIX_SOLO5].fg = so ? C_BLACK : TE_G3;
+            tl[MIX_SOLO5].top = TE_G4;
+            str_cpy(tl[MIX_TOWER].lab, "preamp", 8);
+            tl[MIX_TOWER].bg = dub_ui.on ? C_WHITE : TE_G1;
+            tl[MIX_TOWER].fg = dub_ui.on ? C_BLACK : TE_G4;
+        }
+#endif
         fmt_int(tl[15].lab, song.g[G_BPM]);
         tl[15].bg = song.playing && clk_pos < BEAT_U / 4u ? C_WHITE : TE_G2;
         tl[15].fg = tl[15].bg == C_WHITE ? C_BLACK : C_WHITE;

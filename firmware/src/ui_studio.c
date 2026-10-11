@@ -11,8 +11,13 @@ static void trk_short_name(uint32_t c, char *b);
 static int on_drum_page(void) { return !ui.home && cur_page()->scope == SC_DRUM; }
 
 /* ---------------------------------------------------------------- style --- */
+#ifdef ENABLE_DUB_PREAMP                 /* (ROOTS DARK: one step up, the tiles stand off the #121212) */
+#define TE_G1 RGB(40, 40, 44)            /* tiles */
+#define TE_G2 RGB(64, 64, 70)            /* empty steps, dial tracks */
+#else
 #define TE_G1 RGB(26, 26, 30)            /* tiles */
 #define TE_G2 RGB(54, 54, 60)            /* empty steps, dial tracks */
+#endif
 #define TE_G3 RGB(118, 118, 126)         /* labels */
 #define TE_G4 RGB(196, 196, 204)         /* secondary text */
 #define TE_RED RGB(255, 44, 52)          /* recording, erasing */

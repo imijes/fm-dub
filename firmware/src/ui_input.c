@@ -132,7 +132,8 @@ static uint32_t keys_lit(void)
         if (lights_notes)                          /* NOTES: the scale goes dim (keys_notes_dim), what sounds lit */
             return (blink ? scale_keys(1) : 0u) | keys_sounding(t) | fm1_in.notes;
         return scale_keys(0) & ~(blink ? 0u : scale_keys(1));
-    case LY_MIX:                                   /* tracks heard: 1..4; soloed: 5..8; a fill: 9, armed / on: 10; tap: the beat */
+    case LY_MIX:                                   /* tracks heard: 1..4; soloed: 5..8; a fill: 9, armed / on: 10 (dub:
+                                                    * 11, 12; the computer heard 9, soloed 13); tap: the beat */
         for (i = 0; i < 4u; i++) {
             if (!trk_silent(&trk[i]))
                 m |= 1u << key_of_white(i);
@@ -140,9 +141,15 @@ static uint32_t keys_lit(void)
                 m |= 1u << key_of_white(4u + i);
         }
         if (fill_now)
-            m |= 1u << key_of_white(8);
+            m |= 1u << key_of_white(MIX_FILL);
         if (fill_arm || fill_bar_on)
-            m |= 1u << key_of_white(9);
+            m |= 1u << key_of_white(MIX_BAR);
+#ifdef ENABLE_DUB_PREAMP
+        if (!dub_ctl.usb_mute && (!song.solo || dub_ctl.usb_solo))
+            m |= 1u << key_of_white(MIX_MUTE5);       /* the computer's audio heard: 9; soloed: 13 */
+        if (dub_ctl.usb_solo)
+            m |= 1u << key_of_white(MIX_SOLO5);
+#endif
         if (play_led())
             m |= 1u << key_of_white(15);
         return m;
@@ -230,6 +237,13 @@ static void ui_leds(void)
                                       (ci_on && ci_u % BEAT_U < BEAT_U / 4u));   /* (the count-in's beats) */
     led_put(nl, panel.btn[B_REC], song.rec != 0u || ft_on || (rec_wait && ((fm1_ms / 125u) & 1u)) ||
                                      (ui.hold_kind == 1u && ((fm1_ms / 60u) & 1u)));   /* blinks: armed; fast: clearing */
+#ifdef ENABLE_DUB_PREAMP
+    if (ui.layer == LY_FX) {                       /* the dub preamp's FX layer: OCT- / OCT+ blink while armed */
+        uint32_t bl = (fm1_ms / 250u) & 1u;
+        led_put(nl, panel.btn[B_OCTDN], bl && dub_ctl.latch_arm != dub_live.latch_ack);
+        led_put(nl, panel.btn[B_OCTUP], bl && dub_ctl.solo_arm != dub_live.solo_ack);
+    } else
+#endif
     if (is_drum(TSEL)) {                           /* the drum track: OCT- / OCT+ lit while ghost / hard */
         led_put(nl, panel.btn[B_OCTDN], (fm1_in.buttons & dyn_bit[0]) != 0u);
         led_put(nl, panel.btn[B_OCTUP], (fm1_in.buttons & dyn_bit[1]) != 0u);
@@ -700,6 +714,28 @@ static int layers_input(uint32_t note_edges, uint32_t *pressed, uint32_t home)
                 ui_message(undo_swap(1) ? "REDO" : "NOTHING TO REDO");
         }
     }
+#ifdef ENABLE_DUB_PREAMP
+    if (held == LY_FX) {                                  /* FX + OCT- / OCT+: the dub preamp's LATCH / SIREN SOLO, armed
+                                                           * on the press (one press, one arm; again: disarmed). The
+                                                           * pad that takes it acks it in the ISR (dub_midi.c) */
+        uint32_t ob = 1u << panel.btn[B_OCTDN], pb = 1u << panel.btn[B_OCTUP];
+        static uint32_t prev;
+        uint32_t b = fm1_in.buttons & (ob | pb), press = b & ~prev;
+        prev = b;
+        if (press & ob) {
+            uint8_t ack = dub_live.latch_ack;
+            used[held] = 1;
+            dub_ctl.latch_arm = dub_ctl.latch_arm != ack ? ack : (uint8_t)(ack ^ 1u);
+            ui_message(dub_ctl.latch_arm != ack ? "LATCH: NEXT PAD" : "LATCH OFF");
+        }
+        if (press & pb) {
+            uint8_t ack = dub_live.solo_ack;
+            used[held] = 1;
+            dub_ctl.solo_arm = dub_ctl.solo_arm != ack ? ack : (uint8_t)(ack ^ 1u);
+            ui_message(dub_ctl.solo_arm != ack ? "SIREN SOLO: PAD 9" : "SIREN SOLO OFF");
+        }
+    }
+#endif
     if (held == LY_STEP) {                                /* SEQ + OCT- / OCT+: the page; a step held: OCT- its nudge, locks and
                                                            * condition go, OCT+ its fill condition (normal, fill only, no fill) */
         uint32_t ob = 1u << panel.btn[B_OCTDN], pb = 1u << panel.btn[B_OCTUP];

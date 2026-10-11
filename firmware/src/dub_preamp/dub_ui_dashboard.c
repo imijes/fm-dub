@@ -10,7 +10,6 @@
  *       |      |  FDBK         |  ring, SUB / TREBLE bars                |  ECHO      |      |
  *       | SUB  |  0.60         +-----------------------------------------+  1/8D      | SUB  |
  *       |      |  flags (166): E>R BYP CLK ARM                                             |      |
- *       |      |  the lamp row (184..219): THROW FREEZE DRIFT / ROLL SIREN                 |      |
  *       |      |  MIDI CH, SUB USB (222)                                                   |      |
  *   235 +------+                                                                      +------+
  *
@@ -20,9 +19,9 @@
  * a killed band's tile turns solid red with an X (dub_ctl.kill | dub_live.kill); the limiter's bar is the gain
  * (dub_tel.lim_gr_q15) on a dB scale; the scope draws the echo as a rotating spiral ring (dub_tel.echo_env),
  * shaken by WOW & FLUTTER (the UI's own LFSR); the border flashes with the siren's LFO (dub_tel.siren_ph)
- * while its gate is open. The punch slots are not names on the screen but lamps, engraved in gray, their lenses
- * lit while the slot is on (pads 5..9, CC 40..44): THROW and FREEZE red, DRIFT (WOW & FLUTTER) and ROLL
- * (STUTTER) gold, SIREN red, as chassis warning lights.
+ * while its gate is open. The punch slots' lamps (THROW FREEZE DRIFT ROLL SIREN) are not on the tower: they are
+ * the FX layer's pads (Phase 5, dub_fx_tile below, ui_layers.c), where the hands are. Opened from the Mix grid
+ * (GLO + pad 10) the tower is latched: a LOCK badge top right, only a HOME tap lets it go.
  *
  * The screen is written only where something changed: every element is its own rectangle, drawn into the
  * canvas and sent when its picture's signature differs from the last one sent (the static faceplate: once, on
@@ -85,8 +84,9 @@ static struct {
     uint8_t on;                                /* opened (the menu), closed by HOME */
     uint8_t shown;                             /* drawn last frame (ui_draw.c: the page behind is redrawn after) */
     uint8_t page, home;                        /* ui.page / ui.home it was opened on: another page closes it */
+    uint8_t lock;                              /* latched (opened from the Mix grid): only HOME closes it */
     uint32_t last_ms;                          /* the last frame the moving parts were drawn */
-    uint32_t sig_drv[DUB_NBAND], sig_knob, sig_kill, sig_lim, sig_scope, sig_txt[9], sig_lamp[5];
+    uint32_t sig_drv[DUB_NBAND], sig_knob, sig_kill, sig_lim, sig_scope, sig_txt[9];
     uint32_t lfsr;                             /* WOW's wobble on the ring */
     uint32_t rot;                              /* the vortex's turn (1024 a revolution) */
     uint32_t bytes;                            /* sent to the panel by the last frame (tests) */
@@ -174,7 +174,7 @@ static void dub_ui_disc(int32_t cx, int32_t cy, int32_t r, uint16_t c)   /* a fi
 
 static int dub_ui_siren_open(void)
 {
-    return dub_ctl.siren_gate || dub_live.siren_gate || dub_punch_now() == DUB_PX_SIREN;
+    return dub_ctl.siren_gate || dub_live.siren_gate || dub_punch_now() == DUB_PX_SIREN || dub_live.siren_solo;
 }
 
 /* ----------------------------------------------------------------- the parts --- */
@@ -185,8 +185,8 @@ static void dub_ui_plate(void)
     lcd_fill(0, 0, 240, 240, DUB_UI_BG);
     dub_ui.bytes += 240u * 240u * 2u;
     cv_begin(176, 20, DUB_UI_BG);                               /* the title */
-    dub_ui_text((176 - text_w(&FONT_S, "PREAMP CONTROL TOWER")) / 2, 2, &FONT_S, "PREAMP CONTROL TOWER",
-                DUB_UI_SILVER, DUB_UI_BG);
+    dub_ui_text(dub_ui.lock ? 0 : (176 - text_w(&FONT_S, "PREAMP CONTROL TOWER")) / 2, 2, &FONT_S,
+                "PREAMP CONTROL TOWER", DUB_UI_SILVER, DUB_UI_BG);   /* (latched: left, the badge on its right) */
     cv_rect(0, 19, 176, 1, DUB_UI_EDGE);
     dub_ui_send(32, 0);
     for (side = 0; side < 2u; side++) {                         /* the cabinets: a box, the bevel, the screws */
@@ -373,51 +373,16 @@ static void dub_ui_value(uint32_t slot, uint32_t x, uint32_t y, uint32_t w, cons
     dub_ui_send(x, y);
 }
 
-/* the lamp row (rows 184..219): five engraved plates, gray at rest, each lens lit (an inverted, backlit block) while
- * its punch slot is on. Five words do not fit one line between the speakers in FONT_S (200 px of text, 176 px of
- * room), so the plates tile 3 + 2, 58 x 18 each: THROW FREEZE DRIFT / ROLL SIREN. Each is its own rectangle, sent
- * only when it switches. SIREN also lights when the siren's gate is opened another way (its pad, MIDI). */
-#define DUB_UI_LAMP_X 32
-#define DUB_UI_LAMP_Y 184
-#define DUB_UI_LAMP_W 58
-#define DUB_UI_LAMP_H 18
-#define DUB_UI_NLAMP 5u
-static const struct {
-    const char *name;
-    int8_t slot;                                                /* the punch slot that lights it */
-    uint16_t lit;                                               /* its lens lit */
-    uint8_t x, y;                                               /* where, on the screen */
-} DUB_UI_LAMPS[DUB_UI_NLAMP] = {
-    {"THROW", DUB_PX_ECHO_THROW, RGB(232, 40, 32), DUB_UI_LAMP_X, DUB_UI_LAMP_Y},
-    {"FREEZE", DUB_PX_ECHO_FREEZE, RGB(232, 40, 32), DUB_UI_LAMP_X + DUB_UI_LAMP_W + 1, DUB_UI_LAMP_Y},
-    {"DRIFT", DUB_PX_WOW, RGB(250, 188, 0), DUB_UI_LAMP_X + 2 * (DUB_UI_LAMP_W + 1), DUB_UI_LAMP_Y},
-    {"ROLL", DUB_PX_STUTTER, RGB(250, 188, 0), DUB_UI_LAMP_X + 29, DUB_UI_LAMP_Y + DUB_UI_LAMP_H},
-    {"SIREN", DUB_PX_SIREN, RGB(232, 40, 32), DUB_UI_LAMP_X + 29 + DUB_UI_LAMP_W + 1, DUB_UI_LAMP_Y + DUB_UI_LAMP_H},
-};
-static int dub_ui_lamp_on(uint32_t k)
+/* the LOCK badge, top right of the title band (rows 3..17): a gold plate, the word in the background's charcoal */
+static void dub_ui_badge(int force)
 {
-    int32_t p = dub_punch_now();
-    return DUB_UI_LAMPS[k].slot == DUB_PX_SIREN ? dub_ui_siren_open() : p == DUB_UI_LAMPS[k].slot;
-}
-static void dub_ui_lamps(int force)
-{
-    uint32_t k;
-    for (k = 0; k < DUB_UI_NLAMP; k++) {
-        int on = dub_ui_lamp_on(k);
-        uint16_t lens = on ? DUB_UI_LAMPS[k].lit : DUB_UI_PLATE, ink = on ? DUB_UI_BG : DUB_UI_GRAY;
-        uint32_t sig = on ? 2u : 1u;
-        if (!force && sig == dub_ui.sig_lamp[k])
-            continue;                                           /* (unchanged: not sent) */
-        dub_ui.sig_lamp[k] = sig;
-        cv_begin(DUB_UI_LAMP_W, DUB_UI_LAMP_H, DUB_UI_BG);
-        cv_rect(0, 0, DUB_UI_LAMP_W, DUB_UI_LAMP_H, DUB_UI_EDGE);   /* the bezel */
-        cv_rect(1, 1, DUB_UI_LAMP_W - 2, DUB_UI_LAMP_H - 2, lens);   /* the lens */
-        cv_rect(0, 0, 1, 1, DUB_UI_BG), cv_rect(DUB_UI_LAMP_W - 1, 0, 1, 1, DUB_UI_BG);   /* (rounded corners) */
-        cv_rect(0, DUB_UI_LAMP_H - 1, 1, 1, DUB_UI_BG), cv_rect(DUB_UI_LAMP_W - 1, DUB_UI_LAMP_H - 1, 1, 1, DUB_UI_BG);
-        dub_ui_text((DUB_UI_LAMP_W - text_w(&FONT_S, DUB_UI_LAMPS[k].name)) / 2, 1, &FONT_S, DUB_UI_LAMPS[k].name,
-                    ink, lens);
-        dub_ui_send(DUB_UI_LAMPS[k].x, DUB_UI_LAMPS[k].y);
-    }
+    int32_t w = (int32_t)text_w(&FONT_S, "LOCK") + 8;
+    if (!force && dub_ui.sig_txt[5] == 1u)
+        return;
+    dub_ui.sig_txt[5] = 1u;
+    cv_begin((uint32_t)w, 15, DUB_UI_GOLD);
+    dub_ui_text(4, 0, &FONT_S, "LOCK", DUB_UI_BG, DUB_UI_GOLD);
+    dub_ui_send((uint32_t)(236 - w), 3);
 }
 
 static void dub_ui_values(int force)
@@ -428,30 +393,28 @@ static void dub_ui_values(int force)
     b[0] = 'X';
     fmt_fix(b + 1, (v * 10 + 2048) / 4096, 1);
     dub_ui_value(0, 32, 106, 48, &FONT_S, b, DUB_UI_GOLD, force);
-    v = (dub_ctl.echo_fb_q12 * 100 + 2048) / 4096;              /* 0.00 .. 1.25 (fmt_fix drops the leading 0) */
+    v = song.g[G_DFDBK];                                        /* DLY FDBK %: 0.00 .. 1.25 (fmt_fix drops the 0) */
     b[0] = (char)('0' + v / 100), b[1] = '.', b[2] = (char)('0' + v / 10 % 10), b[3] = (char)('0' + v % 10), b[4] = 0;
-    dub_ui_value(1, 32, 142, 48, &FONT_S, b, dub_ctl.echo_fb_q12 > DUB_Q12_ONE ? DUB_UI_RED : DUB_UI_GOLD, force);
+    dub_ui_value(1, 32, 142, 48, &FONT_S, b, song.g[G_DFDBK] > 100 ? DUB_UI_RED : DUB_UI_GOLD, force);
     v = dub_ctl.siren_note_q8 >> 8;                             /* D5 */
     str_cpy(b, DUB_UI_NOTE[(uint32_t)v % 12u], sizeof b);
     fmt_int(b + str_len(b), v / 12 - 1);
     dub_ui_value(2, 160, 106, 48, &FONT_S, b, dub_ui_siren_open() ? DUB_UI_STROBE_HI : DUB_UI_GOLD, force);
-    if (dub_ctl.echo_sync)
-        str_cpy(b, DUB_UI_DLY[dub_ctl.echo_div % NDIV_DLY], sizeof b);
-    else
-        fmt_int(b, dub_ctl.echo_ms);
+    str_cpy(b, DUB_UI_DLY[(uint32_t)song.g[G_DTIME] % NDIV_DLY], sizeof b);   /* DLY TIME: the tape echo's */
     dub_ui_value(3, 160, 142, 48, &FONT_S, b, DUB_UI_GOLD, force);
     str_cpy(b, dub_ctl.echo_to_rev ? "E>R " : "    ", sizeof b);   /* the switches (pads 11..14) */
     str_cpy(b + 4, dub_ctl.bypass ? "BYP " : "    ", sizeof b - 4);
     str_cpy(b + 8, dub_ctl.siren_sync ? "CLK " : "    ", sizeof b - 8);
     str_cpy(b + 12, dub_ctl.sub_arm ? "ARM" : "   ", sizeof b - 12);
     dub_ui_value(4, 36, 166, 168, &FONT_S, b, dub_ctl.bypass ? DUB_UI_RED : DUB_UI_GREEN, force);
-    dub_ui_lamps(force);                                        /* the punch slots: the lamp row */
     str_cpy(b, "MIDI CH ", sizeof b);
     if (dub_ctl.midi_ch)
         fmt_int(b + str_len(b), dub_ctl.midi_ch);
     else
         str_cpy(b + str_len(b), "OFF", sizeof b - str_len(b));
     dub_ui_value(6, 32, 222, 112, &FONT_S, b, DUB_UI_GRAY, force);
+    if (dub_ui.lock)                                            /* latched (from the Mix grid): the LOCK badge */
+        dub_ui_badge(force);
     dub_ui_value(7, 152, 222, 24, &FONT_S, "SUB", dub_tel.sub_on ? DUB_UI_GREEN : DUB_UI_PLATE, force);   /* the lamps */
     dub_ui_value(8, 184, 222, 24, &FONT_S, "USB", dub_tel.usb_in_live ? DUB_UI_GREEN : DUB_UI_PLATE, force);
 }
@@ -488,7 +451,7 @@ static void dub_tower_knob(uint32_t k, int32_t s)
         dub_ctl.tubby_on = 1;                                   /* (the knob turns the filter in) */
         break;
     case 1: dub_ctl.drive_q12 = (int16_t)clamp(dub_ctl.drive_q12 + s * 256, DUB_Q12_ONE, DUB_DRIVE_MAX); break;
-    case 2: dub_ctl.echo_fb_q12 = (int16_t)clamp(dub_ctl.echo_fb_q12 + s * 82, 0, DUB_FB_MAX); break;
+    case 2: song.g[G_DFDBK] = (int16_t)clamp(song.g[G_DFDBK] + s * 2, 0, 125); break;   /* DLY FDBK (Phase 5) */
     case 3: dub_ctl.siren_note_q8 = (int16_t)clamp(dub_ctl.siren_note_q8 + s * 256, 24 << 8, 108 << 8); break;
     default: break;
     }
@@ -510,9 +473,32 @@ static int dub_pad_lit(uint32_t i)
     }
 }
 
+/* the FX layer's pads 5..9 (Phase 5): three states. Dark: gray text. Armed: THROW, FREEZE, ROLL with the latch
+ * armed (FX + OCT-), white text blinking; SIREN with the solo armed (FX + OCT+), red text blinking. On (held or
+ * latched, the siren solo): a solid block, THROW FREEZE SIREN red, DRIFT ROLL gold, black text. 1 when it is one of
+ * those five (bg, fg set), 0 for the other pads (the caller's colours) */
+static int dub_fx_tile(uint32_t i, uint32_t blink, uint16_t *bg, uint16_t *fg)
+{
+    int8_t slot = (int8_t)(DUB_PX_ECHO_THROW + (int32_t)i - 4);
+    int on, armed;
+    if (i < 4u || i > 8u)
+        return 0;
+    on = dub_pad_lit(i) || (slot == DUB_PX_SIREN && dub_ui_siren_open());
+    armed = slot == DUB_PX_SIREN ? dub_ctl.solo_arm != dub_live.solo_ack
+                                 : slot != DUB_PX_WOW && dub_ctl.latch_arm != dub_live.latch_ack;
+    if (on) {
+        *bg = slot == DUB_PX_WOW || slot == DUB_PX_STUTTER ? DUB_UI_GOLD : DUB_UI_RED;
+        *fg = C_BLACK;
+    } else {
+        *bg = DUB_UI_PLATE;
+        *fg = armed && blink ? (slot == DUB_PX_SIREN ? DUB_UI_RED : C_WHITE) : DUB_UI_GRAY;
+    }
+    return 1;
+}
+
 /* the FX layer's screen (ui_layers.c): the pads' names, the knobs' names and values (lower case, as the layers) */
-static const char *const DUB_PAD_NAME[16] = {"kill s", "kill b", "kill m", "kill t", "throw", "freeze", "wow",
-                                             "stutt", "siren", "crash", "e>rev", "bypass", "clk", "bloom", "-", "-"};
+static const char *const DUB_PAD_NAME[16] = {"kill s", "kill b", "kill m", "kill t", "throw", "freeze", "drift",
+                                             "roll", "siren", "crash", "e>rev", "bypass", "clk", "bloom", "-", "-"};
 static void dub_lower(char *s)                          /* (the layers' lower case) */
 {
     for (; *s; s++)
@@ -528,7 +514,7 @@ static void dub_fx_knobs(char v[4][10], const char **lab, int32_t *ratio)
     dub_lower(v[0]);
     v[1][0] = 'x';
     fmt_fix(v[1] + 1, (dub_ctl.drive_q12 * 10 + 2048) / 4096, 1);
-    f = (dub_ctl.echo_fb_q12 * 100 + 2048) / 4096;
+    f = song.g[G_DFDBK];
     v[2][0] = (char)('0' + f / 100), v[2][1] = '.', v[2][2] = (char)('0' + f / 10 % 10), v[2][3] = (char)('0' + f % 10);
     v[2][4] = 0;
     str_cpy(v[3], DUB_UI_NOTE[(uint32_t)n % 12u], 10);
@@ -536,19 +522,26 @@ static void dub_fx_knobs(char v[4][10], const char **lab, int32_t *ratio)
     dub_lower(v[3]);
     ratio[0] = (int32_t)step * 1000 / 10;
     ratio[1] = (dub_ctl.drive_q12 - DUB_Q12_ONE) * 1000 / (DUB_DRIVE_MAX - DUB_Q12_ONE);
-    ratio[2] = dub_ctl.echo_fb_q12 * 1000 / DUB_FB_MAX;
+    ratio[2] = song.g[G_DFDBK] * 1000 / 125;
     ratio[3] = (n - 24) * 1000 / 84;
 }
 
 static void dub_tower_open(uint32_t page, uint32_t home)   /* (the page under it: from the menu, TRACKS) */
 {
     dub_ui.on = 1;
+    dub_ui.lock = 0;
     dub_ui.page = (uint8_t)page;
     dub_ui.home = (uint8_t)home;
+}
+static void dub_tower_latch(uint32_t page, uint32_t home)   /* the Mix grid's PREAMP pad: opened and latched */
+{
+    dub_tower_open(page, home);
+    dub_ui.lock = 1;
 }
 static void dub_tower_close(void)
 {
     dub_ui.on = 0;
+    dub_ui.lock = 0;
 }
 
 #endif /* ENABLE_DUB_PREAMP */

@@ -5,14 +5,18 @@
  *   KNOB 1  MIDI CH    OFF, 1..16 (default 11): the channel the preamp listens to. Amber when it is also a part's
  *                      channel (1..3) or the drum channel (GLO > DRUMS > CH): both would hear it
  *   KNOB 2  PREAMP     ON / BYPASS (the same switch as pad 12 USB BYP on the MIX page)
- *   KNOB 3  DEFAULTS   OCT+ puts every preamp setting back as shipped
+ *   KNOB 3  SETTINGS   SAVE / DEFAULTS (the knob picks, OCT+ does it): SAVE writes the preamp's settings to flash
+ *                      (amber while they differ from it); DEFAULTS puts every preamp setting back as shipped, in
+ *                      RAM (SAVE keeps them)
  *   KNOB 4  CONTROL TOWER  OCT+ opens the dashboard (dub_ui_dashboard.c; HOME closes it)
  *
  * Flash: one record in the sector 0xFB000 (free after USR4, fm1_flash.h FL_DUB_LO). The SLOOP settings object is
  * not touched, so the official SLOOP firmware still reads it as its own (going back keeps the SYN kits). One sector,
  * no A/B pair (there is no second free sector): payload first, then the header with both CRCs; a write cut short
- * leaves no valid header and the next boot uses the defaults. Saved with the SLOOP settings (settings_save, when
- * the menu closes, or once stopped and quiet: an erase stops the audio for ~50 ms).
+ * leaves no valid header and the next boot uses the defaults. Written only when asked (Phase 5): DUB > SETTINGS >
+ * SAVE. A knob, a pad, a CC changes the preamp in RAM only; the next power-on comes back to what was saved. The
+ * write itself goes with the SLOOP settings (settings_save: when the menu closes, or once stopped and quiet: an
+ * erase stops the audio for ~50 ms), so a SAVE while playing is written when the music stops.
  * What is saved: the settings and the sound of the preamp. Not saved: the performance state (kills, siren gate,
  * SUB BLOOM armed, the punch slot, the duck): every power-on starts with nothing killed.
  *
@@ -123,8 +127,13 @@ static void dub_persist_apply(const dub_persist_t *p)   /* the record -> dub_ctl
     DUB_PUBLISH();
 }
 
-/* the settings differ from flash: project.c sections_flush asks, so a change made outside the menu (a pad, a
- * MIDI CC) is saved too, once stopped and quiet */
+static uint8_t dub_save_req;          /* DUB > SETTINGS > SAVE asked, not written yet (project.c settings_save) */
+static uint8_t dub_set_pick;          /* the SETTINGS row: 0 SAVE, 1 DEFAULTS */
+
+/* project.c sections_flush: a SAVE is waiting (written once stopped and quiet) */
+static int dub_persist_wanted(void) { return dub_save_req; }
+
+/* the settings differ from flash (the SAVE row amber) */
 static int dub_persist_changed(void)
 {
     dub_persist_t p;
@@ -156,14 +165,12 @@ static void dub_persist_boot(void)
     dub_saved_ok = h.len == sizeof p && !memcmp(&dub_saved, &p, sizeof p);
 }
 
-/* project.c settings_save: write the record when it differs from flash. 0 ok or unchanged, < 0 flash error */
-static int dub_persist_save(void)
+/* the record to flash when it differs from it. 0 ok or unchanged, < 0 flash error */
+static int dub_persist_write(void)
 {
     dub_rec_hdr_t h;
     dub_persist_t p;
     int rc;
-    if (!flash_ok)
-        return 0;
     dub_persist_fill(&p);
     if (dub_saved_ok && !memcmp(&p, &dub_saved, sizeof p))
         return 0;                                     /* unchanged: no erase cycle */
@@ -190,9 +197,25 @@ static int dub_persist_save(void)
     dub_saved_ok = 1;
     return 0;
 }
+
+/* project.c settings_save, after a SAVE (dub_save_req): write the record when it differs from flash. 0 ok or
+ * unchanged, < 0 flash error (the request stays: tried again at the next quiet save) */
+static int dub_persist_save(void)
+{
+    int rc;
+    if (!flash_ok || !dub_save_req)
+        return 0;
+    rc = dub_persist_write();
+    dub_save_req = (uint8_t)(rc != 0);
+    return rc;
+}
 #else
 static void dub_persist_boot(void) { dub_ctl_defaults(); }
-static int dub_persist_save(void) { return 0; }
+static int dub_persist_save(void)
+{
+    dub_save_req = 0;                                 /* (no flash: nothing to write) */
+    return 0;
+}
 #endif
 
 /* -------------------------------------------------------------- the menu --- */
@@ -217,9 +240,11 @@ static const char *dub_mi_value(uint32_t i, uint16_t *c)
             *c = C_AMB;
         return b;
     case MI_DUBON: return dub_ctl.bypass ? "BYPASS" : "ON";
-    case MI_DUBRST:
-        *c = C_DIM;
-        return "OCT+ RESETS";
+    case MI_DUBSET:                                   /* SAVE amber while the preamp differs from flash */
+        if (dub_set_pick)
+            return "DEFAULTS";
+        *c = dub_save_req || dub_persist_changed() ? C_AMB : C_DIM;
+        return dub_save_req ? "SAVE: WAITING" : "SAVE";
     case MI_DUBTWR:
         *c = C_DIM;
         return "";                                    /* (an action: "OCT+ OPENS") */
@@ -240,10 +265,18 @@ static int dub_mi_set(uint32_t i, int32_t s)
     case MI_DUBON:                                    /* right ON, left BYPASS; OCT+ toggles */
         dub_ctl.bypass = (uint8_t)(s > 0 ? 0u : s < 0 ? 1u : !dub_ctl.bypass);
         return 1;
-    case MI_DUBRST:
-        if (!s) {
-            dub_ctl_defaults();
-            ui_message("DUB DEFAULTS");
+    case MI_DUBSET:                                   /* the knob: right DEFAULTS, left SAVE; OCT+ does it */
+        if (s) {
+            dub_set_pick = (uint8_t)(s > 0);
+        } else if (dub_set_pick) {
+            dub_ctl_defaults();                       /* (RAM: SAVE keeps them) */
+            ui_message("DUB DEFAULTS: SAVE KEEPS");
+            ui.force = 1;
+        } else {
+            dub_save_req = 1;                         /* written by settings_save: now when stopped, else once */
+            if (!song.playing && !transport_req)      /* stopped and quiet (project.c sections_flush: an erase */
+                settings_save();                      /* stops the audio for ~50 ms) */
+            ui_message(dub_save_req ? "PREAMP: SAVED WHEN STOPPED" : "PREAMP SAVED");
             ui.force = 1;
         }
         return 1;
@@ -262,7 +295,8 @@ static int dub_mi_set(uint32_t i, int32_t s)
 static uint32_t dub_menu_sig(void)
 {
     return (uint32_t)dub_ctl.midi_ch * 2654435761u + (uint32_t)dub_ctl.bypass * 40503u +
-           (uint32_t)dub_midi_ch_shared() * 9973u;
+           (uint32_t)dub_midi_ch_shared() * 9973u + (uint32_t)dub_set_pick * 7907u + (uint32_t)dub_save_req * 6151u +
+           (uint32_t)dub_persist_changed() * 4093u;
 }
 
 #endif /* ENABLE_DUB_PREAMP */

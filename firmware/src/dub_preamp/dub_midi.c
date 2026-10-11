@@ -12,7 +12,7 @@
  *   in the main loop (dub_mq_apply, through dub_mq: the settings keep one owner, the one that saves them):
  *     7   USB fader (dub_ctl.usb_in_q15), squared: a fader's taper
  *     20  the big knob (tubby_step 0..10; turns the filter in)    21  drive (drive_q12 x1 .. x8)
- *     22  echo feedback (echo_fb_q12 0 .. 1.25)                    23  siren pitch (siren_note_q8 C1 .. C8)
+ *     22  echo feedback (SLOOP's DLY FDBK 0 .. 125 %)               23  siren pitch (siren_note_q8 C1 .. C8)
  *     50  ECHO>REV   51  PREAMP BYPASS   52  SIREN CLK (sync)   53  SUB BLOOM arm: >= 64 on, < 64 off
  * Switches are set by the value, not toggled by each message: a controller's button sends 127 then 0 (or, latching,
  * 127 on the first press and 0 on the second), and either way the switch follows the button. CCs 120..127 (MIDI's
@@ -25,7 +25,14 @@
  *   11..14 ECHO>REV, BYPASS, SIREN CLK, SUB BLOOM: toggled on the press (through the queue: dub_ctl is the main
  *          loop's)                                         15, 16 nothing
  * The kills of the pads and of MIDI are kept apart and ORed into dub_live.kill: a pad let go does not open a band
- * that MIDI holds killed (nor the other way). */
+ * that MIDI holds killed (nor the other way).
+ *
+ * LATCH and SIREN SOLO (Phase 5), armed from the main loop (FX + OCT- / FX + OCT+, ui_input.c: one press, one arm;
+ * dub_ctl.latch_arm / solo_arm differ from dub_live.latch_ack / solo_ack while armed) and taken here:
+ *   latch armed, pad 5 / 6 / 8 (THROW, FREEZE, ROLL): the slot stays on after the key comes up (dub_live.latched);
+ *     the same pad again lets it go. A slot held over a latched one plays while held, then the latched one returns.
+ *   solo armed, pad 9: the SIREN SOLO (dub_live.siren_solo): the four bands killed, the siren open over the echoes;
+ *     pad 9 again ends it. */
 #ifdef ENABLE_DUB_PREAMP
 
 #define DUB_CC_TOGGLE 120u            /* the queue's toggles: 120 ECHO>REV, 121 BYPASS, 122 SIREN CLK, 123 SUB BLOOM */
@@ -36,7 +43,16 @@ static struct {                       /* the audio ISR's */
     uint32_t punch_key;               /* the key holding the pads' punch slot */
 } dub_pad;
 
-static void dub_kill_publish(void) { dub_live.kill = (uint8_t)(dub_pad.midi_kill | dub_pad.pad_kill); }
+static void dub_kill_publish(void)
+{
+    dub_live.kill = (uint8_t)(dub_pad.midi_kill | dub_pad.pad_kill | (dub_live.siren_solo ? DUB_KILL_ALL : 0u));
+}
+
+/* the slots a latch takes: THROW, FREEZE, ROLL */
+static int dub_latchable(int8_t slot)
+{
+    return slot == DUB_PX_ECHO_THROW || slot == DUB_PX_ECHO_FREEZE || slot == DUB_PX_STUTTER;
+}
 
 /* seq.c key_down, FX held (the audio ISR): pad i (0..15), keybit its key */
 static void dub_pad_down(uint32_t i, uint32_t keybit)
@@ -49,6 +65,23 @@ static void dub_pad_down(uint32_t i, uint32_t keybit)
         int8_t slot = (int8_t)(DUB_PX_ECHO_THROW + (int32_t)(i - 4u));
         if (slot == DUB_PX_SPRING_CRASH) {
             dub_ev_post(&dub_live.ev_crash);
+        } else if (slot == DUB_PX_SIREN && dub_live.siren_solo) {
+            dub_live.siren_solo = 0;                    /* pad 9 again: the solo ends, the bands come back */
+            dub_kill_publish();
+        } else if (slot == DUB_PX_SIREN && dub_ctl.solo_arm != dub_live.solo_ack) {
+            dub_live.solo_ack = dub_ctl.solo_arm;       /* (the arm taken) */
+            dub_live.siren_solo = 1;
+            dub_kill_publish();
+        } else if (dub_live.latched == slot) {
+            dub_live.latched = DUB_PX_NONE;             /* the latched pad again: let go */
+            if (dub_live.punch == slot)
+                dub_live.punch = DUB_PX_NONE;
+            dub_pad.punch_key = 0;
+        } else if (dub_latchable(slot) && dub_ctl.latch_arm != dub_live.latch_ack) {
+            dub_live.latch_ack = dub_ctl.latch_arm;
+            dub_live.latched = slot;
+            dub_live.punch = slot;
+            dub_pad.punch_key = 0;                      /* (its key coming up does not end it) */
         } else {
             dub_live.punch = slot;
             dub_pad.punch_key = keybit;
@@ -70,7 +103,7 @@ static void dub_pad_up(uint32_t keybit)
         }
     if (dub_pad.punch_key == keybit) {
         dub_pad.punch_key = 0;
-        dub_live.punch = DUB_PX_NONE;
+        dub_live.punch = dub_live.latched;              /* (a latched slot under it comes back) */
     }
 }
 
@@ -88,10 +121,14 @@ static int dub_midi_take(uint32_t pkt)
         dub_kill_publish();
     } else if (cc >= 40u && cc <= 44u) {
         int8_t slot = (int8_t)(DUB_PX_ECHO_THROW + (int32_t)(cc - 40u));
-        if (v >= 64u)
+        if (v >= 64u) {
             dub_live.punch = slot;
-        else if (dub_live.punch == slot)
-            dub_live.punch = DUB_PX_NONE;
+        } else {
+            if (dub_live.latched == slot)
+                dub_live.latched = DUB_PX_NONE;         /* (MIDI's off lets a latched slot go too) */
+            if (dub_live.punch == slot)
+                dub_live.punch = dub_live.latched;
+        }
     } else if (cc == 45u) {
         if (v >= 64u)
             dub_ev_post(&dub_live.ev_crash);
@@ -113,7 +150,7 @@ static void dub_mq_apply(void)
             dub_ctl.tubby_on = 1;
             break;
         case 21: dub_ctl.drive_q12 = (int16_t)(DUB_Q12_ONE + v * (uint32_t)(DUB_DRIVE_MAX - DUB_Q12_ONE) / 127u); break;
-        case 22: dub_ctl.echo_fb_q12 = (int16_t)(v * (uint32_t)DUB_FB_MAX / 127u); break;
+        case 22: song.g[G_DFDBK] = (int16_t)(v * 125u / 127u); break;   /* (Phase 5: the tape echo is SLOOP's delay) */
         case 23: dub_ctl.siren_note_q8 = (int16_t)((24u << 8) + v * (84u << 8) / 127u); break;
         case 50: dub_ctl.echo_to_rev = v >= 64u; break;
         case 51: dub_ctl.bypass = v >= 64u; break;

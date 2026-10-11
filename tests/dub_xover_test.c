@@ -283,6 +283,7 @@ static void limits(void)
     check("silence after: the output settles to 0", tail == 0);
 }
 
+static const int32_t zs[CTL];                           /* (no delay / reverb sends) */
 static void bypass(void)
 {
     int32_t l[CTL], r[CTL], prev = 0, jump = 0;
@@ -294,11 +295,11 @@ static void bypass(void)
     for (bl = 0; bl < 50u; bl++) {
         for (i = 0; i < CTL; i++)
             l[i] = r[i] = (int32_t)(i * 777u) - 12000;
-        dub_mix_intercept(l, r, CTL);
-        for (i = 0; i < CTL; i++)
-            same &= l[i] == (int32_t)(i * 777u) - 12000;
+        dub_mix_intercept(l, r, zs, zs, CTL);
+        for (i = 0; i < CTL && bl; i++)                 /* (8 samples later: the limiter's look-ahead, always on) */
+            same &= l[i] == (int32_t)((i + CTL - 8u) % CTL * 777u) - 12000;
     }
-    check("BYPASS: the bus bit for bit (the chain does not run)", same && dub_chain.cold);
+    check("BYPASS: the bus bit for bit, 8 samples later (the colour does not run)", same && dub_chain.cold);
     for (bl = 0; bl < 600u; bl++) {                    /* a 100 Hz sine; BYPASS off at 100, on at 400 */
         if (bl == 100u)
             dub_ctl.bypass = 0;
@@ -306,7 +307,7 @@ static void bypass(void)
             dub_ctl.bypass = 1;
         for (i = 0; i < CTL; i++, t++)
             l[i] = r[i] = (int32_t)lrint(16000 * sin(2 * M_PI * 100 * t / 44100.0));
-        dub_mix_intercept(l, r, CTL);
+        dub_mix_intercept(l, r, zs, zs, CTL);
         for (i = 0; i < CTL; i++) {
             if (bl > 2u && abs(l[i] - prev) > jump)
                 jump = abs(l[i] - prev);

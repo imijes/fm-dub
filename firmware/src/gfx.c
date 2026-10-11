@@ -21,7 +21,11 @@ static uint32_t cv_w, cv_h;
 static int32_t cv_oy;            /* y offset for graph drawing */
 
 #define RGB(r, g, b) ((uint16_t)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))
+#ifdef ENABLE_DUB_PREAMP
+#define C_BLACK 0x10A2u              /* ROOTS DARK: the matte steel charcoal (#121212) of the CONTROL TOWER, every page */
+#else
 #define C_BLACK 0x0000u
+#endif
 #define C_WHITE 0xFFFFu              /* accent only: what is being touched / where we are */
 /* The screen is five steps of one colour, darkest to brightest, plus white.
  * Palettes are picked in the HOME-hold menu (COLOR). */
@@ -29,6 +33,15 @@ typedef struct {
     const char *name;
     uint16_t c[5];
 } palette_t;
+#ifdef ENABLE_DUB_PREAMP
+/* the dub preamp's (Phase 5): ROOTS DARK, the tower's colours on every page: rules #6E6E76, values gold #FABC00,
+ * secondary text green. (SLOOP's five are replaced; the background is C_BLACK, #121212) */
+#define PALETTE_DEFAULT 0u
+static const palette_t PALETTES[] = {
+    {"ROOTS DARK", {RGB(110, 110, 118), RGB(70, 72, 76), RGB(150, 152, 158), RGB(40, 200, 80), RGB(250, 188, 0)}},
+};
+#else
+#define PALETTE_DEFAULT 4u           /* MONO */
 static const palette_t PALETTES[] = {
     {"GREEN", {RGB(0, 40, 12), RGB(0, 84, 30), RGB(16, 140, 54), RGB(56, 200, 92), RGB(120, 255, 146)}},
     {"AMBER", {RGB(60, 26, 0), RGB(110, 50, 0), RGB(170, 82, 0), RGB(225, 120, 8), RGB(255, 166, 40)}},
@@ -36,6 +49,7 @@ static const palette_t PALETTES[] = {
     {"RED", {RGB(52, 8, 8), RGB(100, 18, 14), RGB(170, 36, 26), RGB(226, 64, 48), RGB(255, 112, 92)}},
     {"MONO", {RGB(40, 40, 40), RGB(80, 80, 80), RGB(130, 130, 130), RGB(186, 186, 186), RGB(226, 226, 226)}},
 };
+#endif
 #define NPALETTES (sizeof(PALETTES) / sizeof(PALETTES[0]))
 static uint16_t pal[5];
 #define C_LINE pal[0]                /* 1 rules, separators */
@@ -132,13 +146,14 @@ static uint32_t glyph(const felucca_font_t *f, uint32_t ch)
     return ch - f->first;
 }
 
-/* text, alpha-blended onto black with colour c; returns the end x */
+/* text, alpha-blended onto the background (C_BLACK) with colour c; returns the end x */
 static int32_t cv_text(int32_t x, int32_t y, const felucca_font_t *f, const char *s, uint16_t c)
 {
     uint16_t ramp[16];
-    uint32_t r = c >> 11, g = (c >> 5) & 63u, b = c & 31u, a;
-    for (a = 0; a < 16u; a++)
-        ramp[a] = (uint16_t)(((r * a / 15u) << 11) | ((g * a / 15u) << 5) | (b * a / 15u));
+    int32_t r0 = C_BLACK >> 11, g0 = (C_BLACK >> 5) & 63, b0 = C_BLACK & 31;   /* (black: 0, the ramp as before) */
+    int32_t r = (int32_t)(c >> 11) - r0, g = (int32_t)((c >> 5) & 63u) - g0, b = (int32_t)(c & 31u) - b0, a;
+    for (a = 0; a < 16; a++)
+        ramp[a] = (uint16_t)(((r0 + r * a / 15) << 11) | ((g0 + g * a / 15) << 5) | (b0 + b * a / 15));
     for (; *s; s++) {
         uint32_t gi = glyph(f, (uint8_t)*s), gx, gy, w, bpr;
         const uint8_t *gd;

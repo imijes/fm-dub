@@ -11,8 +11,13 @@
  *   pictures    DIR/tower-*.ppm (idle, playing, everything on) for review, and the audit set as PNG (and PPM):
  *               shot-1-idle, shot-2-overdrive (drive x8, every band near full scale), shot-3-limiter (-10 dB of
  *               gain reduction), shot-4-siren-strobe (the gate open, the LFO at its bright peak), shot-5-wow-spiral
- *               (the echo loud, WOW & FLUTTER shaking the ring, its DRIFT lamp lit), shot-6-siren-lamp; the lamp row:
- *               five engraved plates, each lit by its slot alone and sent only when it switches
+ *               (the echo loud, WOW & FLUTTER shaking the ring), shot-6-locked (opened from the Mix grid: the LOCK
+ *               badge); no lamp row on the tower (Phase 5: the punch slots are not drawn there, a slot switching
+ *               sends nothing)
+ *   fx layer    Phase 5: pads 5..9 dark / armed (blinking) / on (THROW FREEZE SIREN red, DRIFT ROLL gold); the
+ *               LATCH (FX + OCT-): THROW / FREEZE / ROLL stay on after the key, the same pad again lets go, a slot
+ *               held over it returns to it; the SIREN SOLO (FX + OCT+): pad 9 kills the four bands with the siren
+ *               open, pad 9 again ends it
  * usage: dub_ui_test [DIR] */
 #include <stdint.h>
 #include <assert.h>
@@ -276,7 +281,7 @@ int main(int argc, char **argv)
     dub_ctl.sub_arm = 1;
     dub_tel.sub_on = 1;
     dub_tel.usb_in_live = 1;
-    dub_ctl.echo_fb_q12 = DUB_FB_MAX;
+    song.g[G_DFDBK] = 125;                         /* (DLY FDBK: the tape echo's) */
     dub_tel.lim_gr_q15 = 20675;
     tot = max = 0;
     for (i = 0; i < 300u; i++) {
@@ -320,10 +325,12 @@ int main(int argc, char **argv)
         dub_tel.punch = 0xFFu;
         frame(1);
         {
-            int dark = 1;
-            for (f = 0; f < DUB_UI_NLAMP; f++)
-                dark &= px(DUB_UI_LAMPS[f].x + 2, DUB_UI_LAMPS[f].y + 2) == DUB_UI_PLATE;
-            check("audit: idle: the five lamps are there, dark (engraved gray on the plate)", dark);
+            int bare = 1;
+            uint32_t x, y;
+            for (y = 184; y < 220u; y++)
+                for (x = 32; x < 208u; x++)
+                    bare &= px(x, y) == DUB_UI_BG;
+            check("audit: idle: no lamp row on the tower (rows 184..219 bare: the slots are the FX layer's)", bare);
         }
         shot("shot-1-idle");
         dub_ctl.drive_q12 = DUB_DRIVE_MAX;              /* overdrive: drive x8, every band near full scale */
@@ -352,47 +359,116 @@ int main(int argc, char **argv)
         dub_ctl.siren_gate = 0;
         dub_tel.echo_env = 30000;                       /* the spiral: a loud echo, WOW & FLUTTER shaking it */
         dub_live.punch = DUB_PX_WOW;
-        dub_ctl.echo_fb_q12 = DUB_FB_MAX;
+        song.g[G_DFDBK] = 125;                         /* (DLY FDBK: the tape echo's) */
         for (f = 0; f < 9u; f++)
             fm1_ms += 40u, frame(0);
-        check("audit: WOW: the DRIFT lamp lit gold", px(DUB_UI_LAMPS[2].x + 2, DUB_UI_LAMPS[2].y + 2) == DUB_UI_GOLD);
         shot("shot-5-wow-spiral");
         dub_live.punch = DUB_PX_NONE;
         fm1_ms += 40u, frame(0);
-        check("audit: WOW off: the DRIFT lamp dark again", px(DUB_UI_LAMPS[2].x + 2, DUB_UI_LAMPS[2].y + 2) == DUB_UI_PLATE);
-        {   /* each slot lights its lamp only, in its colour, and sends only the lamps that switched */
-            static const int8_t SLOT[DUB_UI_NLAMP] = {DUB_PX_ECHO_THROW, DUB_PX_ECHO_FREEZE, DUB_PX_WOW, DUB_PX_STUTTER,
-                                                      DUB_PX_SIREN};
-            uint32_t k, j;
-            int ok = 1, dirty = 1;
-            dub_tel.echo_env = 0;                       /* (the scope still, so the bytes are the lamps') */
-            memset(dub_tel.band_pk, 0, sizeof dub_tel.band_pk);
-            dub_ctl.echo_fb_q12 = 2458;
+        {   /* a punch slot switching sends nothing to the tower (no lamps there) */
+            static const int8_t SLOT[4] = {DUB_PX_ECHO_THROW, DUB_PX_ECHO_FREEZE, DUB_PX_STUTTER, DUB_PX_NONE};
+            uint32_t k, n = 0;
+            dub_tel.echo_env = 0;                       /* (the scope still) */
+            memset((void *)dub_tel.band_pk, 0, sizeof dub_tel.band_pk);
+            song.g[G_DFDBK] = 60;
             fm1_ms += 40u, frame(0);
             fm1_ms += 40u, frame(0);
-            for (k = 0; k < DUB_UI_NLAMP; k++) {
-                uint32_t n;
+            for (k = 0; k < 4u; k++) {
                 dub_live.punch = SLOT[k];
                 fm1_ms += 40u;
-                n = frame(0);
-                for (j = 0; j < DUB_UI_NLAMP; j++)
-                    ok &= px(DUB_UI_LAMPS[j].x + 2, DUB_UI_LAMPS[j].y + 2) ==
-                          (j == k ? (k == 2u || k == 3u ? DUB_UI_GOLD : DUB_UI_RED) : DUB_UI_PLATE);
-                printf("  lamp %s on: %u bytes sent\n", DUB_UI_LAMPS[k].name, n);
-                dirty &= n == DUB_UI_LAMP_W * DUB_UI_LAMP_H * 2u +   /* the lamp; with WOW the shaking ring, with the */
-                         (k == 2u ? 72u * 72u * 2u : k == 4u ? 72u * 72u * 2u + 48u * 16u * 2u : 0u);   /* siren its strobe, note */
-                if (k == 4u)
-                    shot("shot-6-siren-lamp");
-                dub_live.punch = DUB_PX_NONE;
-                fm1_ms += 40u, frame(0);
+                n += frame(0);
             }
-            check("audit: lamps: each slot lights its own (THROW, FREEZE red; DRIFT, ROLL gold; SIREN red)", ok);
-            check("audit: lamps: a switch sends only the lamps that changed (dirty rectangles)", dirty);
-            ok = 1;
-            for (j = 0; j < DUB_UI_NLAMP; j++)
-                ok &= px(DUB_UI_LAMPS[j].x + 2, DUB_UI_LAMPS[j].y + 2) == DUB_UI_PLATE;
-            check("audit: lamps: all dark again", ok);
+            printf("  THROW, FREEZE, ROLL, none on the tower: %u bytes sent\n", n);
+            check("audit: the slots switching send nothing to the tower (no lamp row)", n == 0u);
         }
+        {   /* opened from the Mix grid: latched, the LOCK badge top right; HOME's close lets it go */
+            uint32_t x, y, gold = 0, title = 1;
+            dub_tower_latch(dub_ui.page, dub_ui.home);
+            frame(1);
+            for (y = 3; y < 18u; y++)
+                for (x = 196; x < 236u; x++)
+                    gold += px(x, y) == DUB_UI_GOLD;
+            for (y = 0; y < 20u; y++)                   /* the title's letters stay clear of the badge */
+                for (x = 32; x < 236u - (text_w(&FONT_S, "LOCK") + 8u); x++)
+                    title &= px(x, y) != DUB_UI_GOLD;
+            check("audit: latched: the LOCK badge, gold, top right", dub_ui.lock && gold > 200u);
+            check("audit: latched: the title clear of the badge", title);
+            shot("shot-6-locked");
+            dub_tower_close();
+            check("audit: HOME's close: unlatched", !dub_ui.on && !dub_ui.lock);
+            dub_tower_open(dub_ui.page, dub_ui.home);
+            frame(1);
+            check("audit: opened from the menu: no badge", !dub_ui.lock && px(230, 8) == DUB_UI_BG);
+        }
+    }
+    /* the FX layer (Phase 5): the pads' three states, the LATCH, the SIREN SOLO (dub_midi.c, as seq.c calls it) */
+    {
+        uint16_t bg, fg;
+        uint32_t k;
+        int ok = 1;
+        dub_ctl_defaults();
+        memset(&dub_live, 0, sizeof dub_live);
+        dub_live.punch = dub_live.latched = DUB_PX_NONE;
+        memset(&dub_pad, 0, sizeof dub_pad);
+        for (k = 4; k < 9u; k++)
+            ok &= dub_fx_tile(k, 1, &bg, &fg) && bg == DUB_UI_PLATE && fg == DUB_UI_GRAY;
+        check("fx: pads 5..9 dark, gray text", ok);
+        check("fx: the other pads are not these tiles", !dub_fx_tile(0, 1, &bg, &fg) && !dub_fx_tile(9, 1, &bg, &fg));
+        ok = 1;
+        for (k = 4; k < 9u; k++) {
+            dub_pad_down(k, 1u << k);
+            ok &= dub_fx_tile(k, 0, &bg, &fg) && fg == C_BLACK && bg == (k == 6u || k == 7u ? DUB_UI_GOLD : DUB_UI_RED);
+            dub_pad_up(1u << k);
+            ok &= dub_live.punch == DUB_PX_NONE;
+        }
+        check("fx: held: a solid block (THROW FREEZE SIREN red, DRIFT ROLL gold); let go: off", ok);
+        dub_ctl.latch_arm = (uint8_t)(dub_live.latch_ack ^ 1u);   /* FX + OCT- */
+        ok = 1;
+        for (k = 4; k < 9u; k++) {
+            int lit = dub_fx_tile(k, 1, &bg, &fg) && fg == C_WHITE, dim = dub_fx_tile(k, 0, &bg, &fg) && fg == DUB_UI_GRAY;
+            ok &= (k == 4u || k == 5u || k == 7u) ? lit && dim : !lit;
+        }
+        check("fx: latch armed: THROW FREEZE ROLL blink white, DRIFT and SIREN do not", ok);
+        dub_pad_down(5, 1u << 5);                       /* FREEZE, latched */
+        dub_pad_up(1u << 5);
+        check("fx: latch: FREEZE stays on after its key, the arm is taken",
+              dub_live.punch == DUB_PX_ECHO_FREEZE && dub_live.latched == DUB_PX_ECHO_FREEZE &&
+              dub_ctl.latch_arm == dub_live.latch_ack && dub_fx_tile(5, 1, &bg, &fg) && bg == DUB_UI_RED);
+        dub_pad_down(4, 1u << 4);                       /* THROW held over it */
+        check("fx: latch: THROW held over it plays", dub_live.punch == DUB_PX_ECHO_THROW);
+        dub_pad_up(1u << 4);
+        check("fx: latch: THROW let go, FREEZE back", dub_live.punch == DUB_PX_ECHO_FREEZE);
+        dub_pad_down(5, 1u << 5);                       /* FREEZE again: let go */
+        dub_pad_up(1u << 5);
+        check("fx: latch: the same pad again lets it go", dub_live.punch == DUB_PX_NONE && dub_live.latched == DUB_PX_NONE);
+        dub_pad_down(4, 1u << 4);                       /* not armed: momentary again */
+        dub_pad_up(1u << 4);
+        check("fx: latch: one arm, one latch (THROW after it: momentary)", dub_live.punch == DUB_PX_NONE);
+        dub_ctl.latch_arm = (uint8_t)(dub_live.latch_ack ^ 1u);
+        dub_pad_down(6, 1u << 6);                       /* DRIFT does not take the latch */
+        dub_pad_up(1u << 6);
+        check("fx: latch: DRIFT stays momentary, the arm waits", dub_live.punch == DUB_PX_NONE &&
+              dub_ctl.latch_arm != dub_live.latch_ack);
+        dub_ctl.latch_arm = dub_live.latch_ack;         /* (FX + OCT- again: disarmed) */
+        dub_ctl.solo_arm = (uint8_t)(dub_live.solo_ack ^ 1u);   /* FX + OCT+ */
+        check("fx: siren solo armed: SIREN blinks red", dub_fx_tile(8, 1, &bg, &fg) && fg == DUB_UI_RED &&
+              dub_fx_tile(8, 0, &bg, &fg) && fg == DUB_UI_GRAY);
+        dub_pad_down(8, 1u << 8);
+        dub_pad_up(1u << 8);
+        check("fx: siren solo: pad 9 kills the four bands, the siren open, its tile solid red",
+              dub_live.siren_solo && dub_kill_now() == DUB_KILL_ALL && dub_ctl.solo_arm == dub_live.solo_ack &&
+              dub_ui_siren_open() && dub_fx_tile(8, 1, &bg, &fg) && bg == DUB_UI_RED);
+        dub_pad_down(8, 1u << 8);
+        dub_pad_up(1u << 8);
+        check("fx: siren solo: pad 9 again ends it, the bands back", !dub_live.siren_solo && dub_kill_now() == 0u &&
+              dub_live.punch == DUB_PX_NONE);
+        dub_pad_down(0, 1u);                            /* a pad kill held through a solo stays killed after it */
+        dub_ctl.solo_arm = (uint8_t)(dub_live.solo_ack ^ 1u);
+        dub_pad_down(8, 1u << 8), dub_pad_up(1u << 8);
+        dub_pad_down(8, 1u << 8), dub_pad_up(1u << 8);
+        check("fx: siren solo over a held kill: that band stays killed", dub_kill_now() == DUB_KILL_SUB);
+        dub_pad_up(1u);
+        check("fx: and opens with its key", dub_kill_now() == 0u);
     }
     /* the knobs */
     dub_ctl_defaults();
@@ -400,11 +476,11 @@ int main(int argc, char **argv)
         dub_tower_knob(0, 1), dub_tower_knob(1, 3), dub_tower_knob(2, 5), dub_tower_knob(3, 4);
     check("knobs: 1 big knob (to 10, in), 2 drive (to x8), 3 feedback (to 1.25), 4 siren (to C8): all held in range",
           dub_ctl.tubby_step == 10 && dub_ctl.tubby_on && dub_ctl.drive_q12 == DUB_DRIVE_MAX &&
-          dub_ctl.echo_fb_q12 == DUB_FB_MAX && dub_ctl.siren_note_q8 == 108 << 8);
+          song.g[G_DFDBK] == 125 && dub_ctl.siren_note_q8 == 108 << 8);
     for (i = 0; i < 400u; i++)
         dub_tower_knob(0, -1), dub_tower_knob(1, -3), dub_tower_knob(2, -5), dub_tower_knob(3, -4);
     check("knobs: and down to FLAT, x1, 0, C1", dub_ctl.tubby_step == 0 && dub_ctl.drive_q12 == DUB_Q12_ONE &&
-          dub_ctl.echo_fb_q12 == 0 && dub_ctl.siren_note_q8 == 24 << 8);
+          song.g[G_DFDBK] == 0 && dub_ctl.siren_note_q8 == 24 << 8);
     printf(fails ? "%d FAILED\n" : "all ok\n", fails);
     return fails != 0;
 }

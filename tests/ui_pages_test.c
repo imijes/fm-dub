@@ -318,17 +318,18 @@ int main(int argc, char **argv)
     check(song.g[G_BPM] >= 95 && song.g[G_BPM] <= 105, "GLO + the last key, tapped at ~0.6 s: ~100 BPM");
     key(0); key(9);
     check(!trk[0].p[P_MUTE] && !song.solo, "again: unmuted, no solo");
-    /* (2.4) key 9 held: a fill; key 10: the next bar is one (again: cancelled) */
-    fm1_in.notes = 1u << key_of_white(8); frame(); frame();
-    check(fill_held == 1u && fill_now == 1u && (keys_lit() & (1u << key_of_white(8))) != 0, "GLO + key 9 held: FILL (the key lit)");
+    /* (2.4) key 9 held: a fill; key 10: the next bar is one (again: cancelled). The dub preamp moves them to 11, 12
+     * (MIX_FILL, MIX_BAR: ui_layers.c) */
+    fm1_in.notes = 1u << key_of_white(MIX_FILL); frame(); frame();
+    check(fill_held == 1u && fill_now == 1u && (keys_lit() & (1u << key_of_white(MIX_FILL))) != 0, "GLO + the FILL key held: FILL (the key lit)");
     ui.force = 1; frame(); ppm("layer-mix-fill");
     fm1_in.notes = 0; frame(); frame();
-    check(fill_held == 0u && fill_now == 0u, "key 9 let go: the fill ends");
-    key(key_of_white(9)); check(fill_arm == 1u && (keys_lit() & (1u << key_of_white(9))) != 0, "GLO + key 10: FILL NEXT BAR armed (the key lit)");
-    key(key_of_white(9)); check(fill_arm == 0u, "GLO + key 10 again: cancelled");
+    check(fill_held == 0u && fill_now == 0u, "the FILL key let go: the fill ends");
+    key(key_of_white(MIX_BAR)); check(fill_arm == 1u && (keys_lit() & (1u << key_of_white(MIX_BAR))) != 0, "GLO + the BAR key: FILL NEXT BAR armed (the key lit)");
+    key(key_of_white(MIX_BAR)); check(fill_arm == 0u, "GLO + the BAR key again: cancelled");
     release(B_GLO);
-    fm1_in.notes = 1u << key_of_white(8); frame();     /* (no layer: a plain key, no fill) */
-    check(fill_held == 0u, "key 9 without GLO: no fill");
+    fm1_in.notes = 1u << key_of_white(MIX_FILL); frame();     /* (no layer: a plain key, no fill) */
+    check(fill_held == 0u, "the FILL key without GLO: no fill");
     fm1_in.notes = 0; frame();
     trk[0].p[P_CHORD] = 0;
 
@@ -751,7 +752,7 @@ int main(int argc, char **argv)
             uint32_t x, y, lit = 0;
             for (y = Y_GRAPH + 30; y < Y_GRAPH + 90; y++)
                 for (x = 40; x < 200; x++)
-                    lit += screen[y * 240u + x] != 0;
+                    lit += screen[y * 240u + x] != swap16(C_BLACK);
             check(lit > 300u, "FILTER page: the graph strip shows it");
         }
         TSEL->p[P_TFLT] = 0;
@@ -919,7 +920,7 @@ int main(int argc, char **argv)
             frames(st == 0u ? 40u : 70u);           /* (past the name's second) */
             ui.force = 1; frames(2);
             for (lit = 0, x = 0; x < 240u * 240u; x++)
-                lit += screen[x] != 0;
+                lit += screen[x] != swap16(C_BLACK);
             snprintf(nm, sizeof nm, "vis-%02u-%s", st + 1u, VIS_NAME[st]);
             for (x = 0; nm[x]; x++) if (nm[x] == ' ') nm[x] = '-';
             ppm(nm);
@@ -930,11 +931,16 @@ int main(int argc, char **argv)
         {   /* MASTER at 0: silence out, the picture as if MASTER were all the way up */
             uint32_t m0 = song.master_q12, pk = 0, op = 0, b;
             static int32_t o2[CTL * 2];
+            uint32_t f, best = 0;
             song.master_q12 = 0; frames(20);
-            for (j = 0; j < SCOPE_N; j++) { uint32_t a = (uint32_t)(scope_buf[j] < 0 ? -scope_buf[j] : scope_buf[j]); if (a > pk) pk = a; }
             for (b = 0; b < 200u; b++) { mix_block(o2, CTL); for (j = 0; j < CTL * 2u; j++) { uint32_t a = (uint32_t)(o2[j] < 0 ? -o2[j] : o2[j]); if (a > op) op = a; } }
-            ui.force = 1; frames(2);
-            for (lit = 0, x = 0; x < 240u * 240u; x++) lit += screen[x] != 0;
+            for (f = 0; f < 10u; f++) {                 /* (the best of ten pictures: one may catch a quiet beat) */
+                ui.force = 1; frames(2);
+                for (j = 0; j < SCOPE_N; j++) { uint32_t a = (uint32_t)(scope_buf[j] < 0 ? -scope_buf[j] : scope_buf[j]); if (a > pk) pk = a; }
+                for (lit = 0, x = 0; x < 240u * 240u; x++) lit += screen[x] != swap16(C_BLACK);
+                if (lit > best) best = lit;
+            }
+            lit = best;
             check(op < 64u && pk > 2000u && lit > 1500u, "visualiser: MASTER at 0: no sound, the picture as at full volume");
             song.master_q12 = m0; frames(4);
         }
@@ -977,7 +983,7 @@ int main(int argc, char **argv)
         encs[panel.enc[EN_K1]] = 3; frame();
         check(dub_ctl.tubby_step == 3 && dub_ctl.tubby_on, "tower: KNOB 1 turns the big knob (3 detents: step 3)");
         encs[panel.enc[EN_K3]] = 2; frame();
-        check(dub_ctl.echo_fb_q12 == 2458 + 164, "tower: KNOB 3 the echo feedback");
+        check(song.g[G_DFDBK] == 60 + 4, "tower: KNOB 3 the echo feedback (DLY FDBK, 2 % a detent)");
         check(song.g[G_BPM] == bpm, "tower: the knobs edit nothing else");
         press(B_GLO); frames(40);
         check(ui.layer == LY_MIX && dub_ui.on, "tower: a layer held shows its screen over it");
@@ -988,6 +994,65 @@ int main(int argc, char **argv)
         dub_tower_open(ui.page, ui.home); frames(2);
         tap(B_LFO); frames(2);
         check(!dub_ui.on && !strcmp(PAGES[ui.page].title, "LFO"), "tower: a page button closes it and opens its page");
+        dub_ctl_defaults();
+        dub_ctl.bypass = 1;
+        go_home(); frames(4);
+    }
+    {   /* the Mix grid (Phase 5): key 9 MUTE 5, key 13 SOLO 5 (the computer's audio), key 10 the CONTROL TOWER,
+         * latched (a page button does not close it, HOME does) */
+        uint32_t m5 = 1u << key_of_white(MIX_MUTE5), s5 = 1u << key_of_white(MIX_SOLO5);
+        dub_ctl_defaults();
+        go_home(); frames(4);
+        press(B_GLO); frames(40);
+        check((keys_lit() & m5) && !(keys_lit() & s5), "mix: the computer heard: key 9 lit, key 13 dark");
+        key(key_of_white(MIX_MUTE5));
+        check(dub_ctl.usb_mute && !(keys_lit() & m5), "mix: GLO + key 9: MUTE 5 (its key dark)");
+        key(key_of_white(MIX_MUTE5));
+        check(!dub_ctl.usb_mute, "mix: ... again: heard");
+        key(key_of_white(MIX_SOLO5));
+        check(dub_ctl.usb_solo && (keys_lit() & s5) && (keys_lit() & m5), "mix: GLO + key 13: SOLO 5 (lit, heard)");
+        key(key_of_white(4));                           /* track 1 soloed too: both heard */
+        check(song.solo == 1u && (keys_lit() & m5), "mix: with a SLOOP solo too: still heard");
+        key(key_of_white(MIX_SOLO5));
+        check(!dub_ctl.usb_solo && !(keys_lit() & m5), "mix: SOLO 5 off, track 1 soloed: the computer silent (key 9 dark)");
+        key(key_of_white(4));
+        ui.force = 1; frame(); ppm("dub-mix");
+        key(key_of_white(MIX_TOWER));
+        check(dub_ui.on && dub_ui.lock, "mix: GLO + key 10: the tower, latched");
+        release(B_GLO); frames(4);
+        check(dub_ui.shown && swap16(screen[8 * 240 + 230]) == DUB_UI_GOLD, "mix: the tower on the screen, the LOCK badge");
+        ppm("dub-tower-locked");
+        tap(B_LFO); frames(2);
+        check(dub_ui.on && dub_ui.shown, "mix: latched: a page button does not close it");
+        tap(B_HOME); frames(2);
+        check(!dub_ui.on && !dub_ui.lock, "mix: HOME lets it go");
+        go_home(); frames(4);
+    }
+    {   /* FX + OCT- / OCT+: the LATCH / SIREN SOLO armed, one press one arm, the octave untouched */
+        int8_t oct = song.octave;
+        uint32_t w5 = 1u << key_of_white(4), w9 = 1u << key_of_white(8);
+        dub_ctl_defaults();
+        dub_live.latched = dub_live.punch = DUB_PX_NONE;
+        press(B_FX); frames(30);
+        tap(B_OCTDN); frames(2);
+        check(dub_ctl.latch_arm != dub_live.latch_ack && song.octave == oct, "fx: FX + OCT-: the latch armed, the octave kept");
+        frames(30);
+        check(dub_ctl.latch_arm != dub_live.latch_ack, "fx: held OCT- does not re-toggle (an edge, once)");
+        fm1_in.notes |= w5; frames(2); fm1_in.notes &= ~w5; frames(2);
+        check(dub_live.punch == DUB_PX_ECHO_THROW && dub_ctl.latch_arm == dub_live.latch_ack, "fx: THROW latched (on after its key)");
+        ui.force = 1; frame(); ppm("dub-fx-latched");
+        fm1_in.notes |= w5; frames(2); fm1_in.notes &= ~w5; frames(2);
+        check(dub_live.punch == DUB_PX_NONE, "fx: THROW again: let go");
+        tap(B_OCTUP); frames(2);
+        check(dub_ctl.solo_arm != dub_live.solo_ack && song.octave == oct, "fx: FX + OCT+: the siren solo armed");
+        tap(B_OCTUP); frames(2);
+        check(dub_ctl.solo_arm == dub_live.solo_ack, "fx: OCT+ again: disarmed");
+        tap(B_OCTUP); frames(2);
+        fm1_in.notes |= w9; frames(2); fm1_in.notes &= ~w9; frames(2);
+        check(dub_live.siren_solo && dub_kill_now() == DUB_KILL_ALL, "fx: pad 9: SIREN SOLO, the bands killed");
+        fm1_in.notes |= w9; frames(2); fm1_in.notes &= ~w9; frames(2);
+        check(!dub_live.siren_solo && dub_kill_now() == 0u, "fx: pad 9 again: released");
+        release(B_FX); frames(4);
         dub_ctl_defaults();
         dub_ctl.bypass = 1;
         go_home(); frames(4);

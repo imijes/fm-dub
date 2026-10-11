@@ -17,7 +17,7 @@ static const char *const PUNCH_NAME[PUNCH_NFX] = {
 #ifdef ENABLE_DUB_PREAMP
 #define punch_ring dub_line_mem           /* the dub preamp's echo and spring (dub_shared_state.h); punch_process
                                            * does not run in that build (fx.c), Phase 4.2 replaces these effects */
-_Static_assert(PUNCH_N == DUB_LINE_N, "the punch ring's memory is the dub line's");
+_Static_assert(PUNCH_N <= DUB_LINE_N, "the punch ring's (never written) indices stay inside the dub line");
 #else
 static int16_t punch_ring[PUNCH_N] __attribute__((section(".pool")));
 #endif

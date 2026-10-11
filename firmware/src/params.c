@@ -109,7 +109,11 @@ static const param_desc_t GP[G_COUNT] = {
     [G_CLOCK] = PE("CLICK", N_CLICK, 0),            /* (the old CLK slot: projects keep their format) */
     [G_TUNE] = PD("TUNE", F_INT, -50, 50, 0),
     [G_DTIME] = PE("TIME", N_DLY, 1),
+#ifdef ENABLE_DUB_PREAMP
+    [G_DFDBK] = PD("FDBK", F_PCT, 0, 125, 60),       /* (the dub preamp's tape echo: up to 1.25, self-oscillating) */
+#else
     [G_DFDBK] = PD("FDBK", F_PCT, 0, 120, 60),
+#endif
     [G_DCOLOR] = PD("COLR", F_PCT, 0, 127, 70),
     [G_DMIX] = PD("MIX", F_PCT, 0, 127, 90),
     [G_RSIZE] = PD("SIZE", F_PCT, 0, 127, 90),

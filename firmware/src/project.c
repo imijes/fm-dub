@@ -580,7 +580,7 @@ static void persist_boot(void)                    /* before settings_init / pane
 #endif
             ) {
             settings.magic = SETTINGS_MAGIC;
-            settings.palette = p.palette;
+            settings.palette = p.palette < NPALETTES ? p.palette : PALETTE_DEFAULT;   /* (another build's) */
             settings.lowcut = p.lowcut;
             settings.zoom = p.zoom;
             if (p.panel.magic == PANEL_MAGIC)
@@ -601,7 +601,7 @@ static void persist_boot(void)                    /* before settings_init / pane
             panel_t old;
             memcpy(&old, w + 2, sizeof old);
             settings.magic = SETTINGS_MAGIC;
-            settings.palette = w[1];
+            settings.palette = w[1] < NPALETTES ? w[1] : PALETTE_DEFAULT;
             settings.lowcut = 0;
             settings.zoom = 0;
             if (old.magic == PANEL_MAGIC)
@@ -677,7 +677,7 @@ static void settings_save(void)
     if (!flash_ok)
         return;
 #ifdef ENABLE_DUB_PREAMP
-    dub_persist_save();                            /* its own sector, when changed (a failure: tried again later) */
+    dub_persist_save();                            /* its own sector, only after DUB > SETTINGS > SAVE (Phase 5) */
 #endif
     persist_fill(&p);
     if (!memcmp(&p, &persist_saved, sizeof p))
@@ -717,7 +717,7 @@ static uint32_t settings_restore(const void *raw, uint32_t n)
         return 2;
     memset(&p, 0, sizeof p);
     memcpy(&p, raw, n);
-    if (p.magic != PERSIST_MAGIC || p.palette >= NPALETTES || p.lowcut > 1u || p.zoom > 1u || !panel_valid(&p.panel))
+    if (p.magic != PERSIST_MAGIC || p.palette >= NPALETTES || p.lowcut >= LOWCUT_N || p.zoom > 1u || !panel_valid(&p.panel))
         return 2;
 #if FELUCCA_ARRANGER
     if (!arr_valid(&p.arrangement, 15u))
@@ -740,7 +740,7 @@ static uint32_t settings_restore(const void *raw, uint32_t n)
     song.g[G_MIDI] = (int16_t)lights_mout;
     song.g[G_ROUTE] = (int16_t)lights_min;
     palette_set(settings.palette);
-    fx_lowcut = (uint8_t)(settings.lowcut != 0);
+    fx_lowcut = LOWCUT_MODE(settings.lowcut);
     ui.force = 1;
     return 0;
 }
@@ -859,7 +859,7 @@ static void sections_flush(void)                        /* main loop */
         settings_later = 1;
     }
 #if defined(ENABLE_DUB_PREAMP) && FELUCCA_FLASH
-    if (flash_ok && dub_persist_changed())              /* the preamp's settings: the same, once quiet */
+    if (flash_ok && dub_persist_wanted())               /* DUB > SETTINGS > SAVE asked while playing: once quiet */
         settings_later = 1;
 #endif
     if (settings_later) {                               /* the menu closed while playing */

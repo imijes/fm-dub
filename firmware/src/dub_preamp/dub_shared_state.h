@@ -76,9 +76,10 @@ enum {
 
 #define DUB_DUCK_Q15 8231             /* -12 dB */
 
-/* the echo's and the spring's memory (dub_effects.c): SLOOP's punch-in ring, 64 KiB of .pool. In this build the
- * punch-in effects do not run (fx.c) and punch.c's ring is this array (they are replaced in Phase 4.2) */
-#define DUB_LINE_N 32768u
+/* the echo's and the spring's memory (dub_effects.c): 128 KiB of .pool, the memory of SLOOP's delay line (Phase 5:
+ * in this build the tape echo is SLOOP's delay; fx.c keeps only its chorus). SLOOP's punch-in effects do not run
+ * either (the FX layer is the preamp's pads): punch.c's ring is this array, never written, so its 64 KiB are free */
+#define DUB_LINE_N 65536u
 static int16_t dub_line_mem[DUB_LINE_N] __attribute__((section(".pool")));
 
 /* ------------------------------------------------- main loop -> ISR: settings --- */
@@ -120,6 +121,10 @@ typedef struct __attribute__((aligned(4))) {
     volatile int8_t punch;            /* DUB_PX_* held or latched from the keys, DUB_PX_NONE */
     volatile uint8_t punch_latch;     /* 1: the punch stays on after the key is released */
     volatile uint8_t duck;            /* SELECTOR'S DUCK held */
+    volatile uint8_t usb_mute;        /* Mix grid MUTE 5 / SOLO 5: the computer's audio (not saved) */
+    volatile uint8_t usb_solo;
+    volatile uint8_t latch_arm;       /* FX + OCT-: the latch armed while it differs from dub_live.latch_ack */
+    volatile uint8_t solo_arm;        /* FX + OCT+: the siren solo armed while it differs from dub_live.solo_ack */
     volatile uint8_t pad0;
     /* 32-bit: one-shot counters (the ISR keeps its own "seen" copy) */
     volatile uint32_t ev_crash;       /* spring tank crash */
@@ -134,6 +139,10 @@ typedef struct __attribute__((aligned(4))) {
     volatile int8_t punch;            /* DUB_PX_*, DUB_PX_NONE */
     volatile uint8_t siren_gate;
     volatile uint8_t duck;
+    volatile uint8_t siren_solo;      /* the siren solo latched (pad 9 after FX + OCT+): the four bands killed */
+    volatile uint8_t latch_ack;       /* the arms taken (= dub_ctl.latch_arm / solo_arm once a pad used them) */
+    volatile uint8_t solo_ack;
+    volatile int8_t latched;          /* the punch slot latched by a pad (DUB_PX_NONE: none) */
     volatile uint32_t ev_crash;       /* (as dub_ctl: counters) */
     volatile uint32_t ev_siren;
 } dub_live_t;
@@ -161,13 +170,13 @@ typedef struct {
     volatile uint32_t r;              /* the main loop's */
 } dub_mq_t;
 
-_Static_assert(sizeof(dub_ctl_t) == 60u, "dub_ctl_t layout");
-_Static_assert(sizeof(dub_live_t) == 12u, "dub_live_t layout");
+_Static_assert(sizeof(dub_ctl_t) == 64u, "dub_ctl_t layout");
+_Static_assert(sizeof(dub_live_t) == 16u, "dub_live_t layout");
 _Static_assert(sizeof(dub_tel_t) == 28u, "dub_tel_t layout");
 _Static_assert((DUB_MQ & (DUB_MQ - 1u)) == 0, "DUB_MQ is a power of two");
 
 static dub_ctl_t dub_ctl;
-static dub_live_t dub_live = {.punch = DUB_PX_NONE};
+static dub_live_t dub_live = {.punch = DUB_PX_NONE, .latched = DUB_PX_NONE};
 static dub_tel_t dub_tel = {.lim_gr_q15 = 32767, .punch = 0xFFu};
 static dub_mq_t dub_mq;
 
@@ -209,6 +218,10 @@ static void dub_ctl_defaults(void)    /* main loop, at boot, before the settings
     dub_ctl.punch = DUB_PX_NONE;
     dub_ctl.punch_latch = 0;
     dub_ctl.duck = 0;
+    dub_ctl.usb_mute = 0;
+    dub_ctl.usb_solo = 0;
+    dub_ctl.latch_arm = dub_live.latch_ack;            /* (not armed) */
+    dub_ctl.solo_arm = dub_live.solo_ack;
     dub_ctl.pad0 = 0;
     DUB_PUBLISH();
 }
@@ -260,8 +273,10 @@ static inline uint32_t dub_menu_sig(void);
 static inline void dub_persist_boot(void);
 static inline int dub_persist_save(void);
 static inline int dub_persist_changed(void);
+static inline int dub_persist_wanted(void);
 /* dub_mixer_intercept.c (Phase 2.2): defined after usb.c (the USB reader); called by fx.c mix_block */
-static inline void dub_mix_intercept(int32_t *mix_l, int32_t *mix_r, uint32_t n);
+static inline void dub_mix_intercept(int32_t *mix_l, int32_t *mix_r, const int32_t *send_d, const int32_t *send_r,
+                                     uint32_t n);
 /* dub_midi.c: the preamp's MIDI channel; called by seq.c (audio ISR) and main.c (main loop) */
 static int dub_midi_take(uint32_t pkt);
 static void dub_mq_apply(void);

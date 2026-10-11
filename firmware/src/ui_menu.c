@@ -5,13 +5,13 @@
  * before / after (stopping at the ends), KNOB 1..3 set the section's settings in order (the knob's colour marks
  * its row), PRESETS moves the cursor; OCT+ steps the cursor's setting round or opens it (CALIBRATION, ABOUT),
  * OCT- closes (from ABOUT: back to the section).
- * ENABLE_DUB_PREAMP: a DUB section before SYSTEM (MIDI CH, PREAMP, DEFAULTS, CONTROL TOWER: dub_menu_extensions.c). */
+ * ENABLE_DUB_PREAMP: a DUB section before SYSTEM (MIDI CH, PREAMP, SETTINGS, CONTROL TOWER: dub_menu_extensions.c). */
 /* ------------------------------------------------------------ menu --- */
 #ifdef ENABLE_DUB_PREAMP
-enum { MI_COLOR, MI_ZOOM, MI_LIGHTS, MI_KEYS, MI_NOTES, MI_LOWCUT, MI_USB, MI_SERIAL, MI_DUBCH, MI_DUBON, MI_DUBRST,
+enum { MI_COLOR, MI_ZOOM, MI_LIGHTS, MI_KEYS, MI_NOTES, MI_LOWCUT, MI_USB, MI_SERIAL, MI_DUBCH, MI_DUBON, MI_DUBSET,
        MI_DUBTWR, MI_PANEL, MI_ABOUT, MI_COUNT };
-static const char *const MI_NAME[MI_COUNT] = {"COLOR", "ZOOM", "LIGHTS", "KEYS", "NOTES", "SPEAKER LOWCUT", "USB AUDIO",
-                                              "USB SERIAL", "MIDI CH", "PREAMP", "DEFAULTS", "CONTROL TOWER",
+static const char *const MI_NAME[MI_COUNT] = {"COLOR", "ZOOM", "LIGHTS", "KEYS", "NOTES", "SPEAKER EQ", "USB AUDIO",
+                                              "USB SERIAL", "MIDI CH", "PREAMP", "SETTINGS", "CONTROL TOWER",
                                               "HARDWARE CALIBRATION", "ABOUT"};
 enum { MS_SCREEN, MS_LIGHTS, MS_AUDIO, MS_DUB, MS_SYSTEM, MS_COUNT };
 static const char *const MS_NAME[MS_COUNT] = {"SCREEN", "LIGHTS", "AUDIO", "DUB", "SYSTEM"};
@@ -59,7 +59,14 @@ static const char *mi_value(uint32_t i, uint16_t *c)
         *c = lights_lvl ? C_HI : C_DIM;               /* (needs LIGHTS) */
         return KEYS_NAME[lights_keys % KEYS_N];
     case MI_NOTES: return lights_notes ? "ON" : "OFF";
+#ifdef ENABLE_DUB_PREAMP
+    case MI_LOWCUT: {                                 /* SPEAKER EQ (Phase 5) */
+        static const char *const EQ[LOWCUT_N] = {"FLAT", "LOW CUT", "BASS+"};
+        return EQ[LOWCUT_MODE(settings.lowcut)];
+    }
+#else
     case MI_LOWCUT: return settings.lowcut ? "ON" : "OFF";
+#endif
     case MI_USB: return usb_full ? "FULL" : "MASTER";
     case MI_SERIAL: return usb_serial ? "ON" : "OFF";
     default:
@@ -192,11 +199,21 @@ static void mi_set(uint32_t i, int32_t s)
         settings.palette = (settings.palette + (s < 0 ? NPALETTES - 1u : 1u)) % NPALETTES;
         palette_set(settings.palette);
         break;
-    case MI_ZOOM:
-    case MI_LOWCUT: {                                  /* right ON, left OFF; OCT+ toggles */
+#ifdef ENABLE_DUB_PREAMP
+    case MI_LOWCUT: {                                  /* SPEAKER EQ: FLAT, LOW CUT, BASS+: right / left a step (stops at
+                                                        * the ends), OCT+ round */
+        uint32_t v = LOWCUT_MODE(settings.lowcut);
+        settings.lowcut = s > 0 ? (v + 1u < LOWCUT_N ? v + 1u : v) : s < 0 ? (v ? v - 1u : 0u) : (v + 1u) % LOWCUT_N;
+        fx_lowcut = LOWCUT_MODE(settings.lowcut);
+        break;
+    }
+#else
+    case MI_LOWCUT:
+#endif
+    case MI_ZOOM: {                                    /* right ON, left OFF; OCT+ toggles */
         uint32_t *v = i == MI_LOWCUT ? &settings.lowcut : &settings.zoom;
         *v = s > 0 ? 1u : s < 0 ? 0u : !*v;
-        fx_lowcut = (uint8_t)(settings.lowcut != 0);
+        fx_lowcut = LOWCUT_MODE(settings.lowcut);
         break;
     }
     case MI_USB:                                       /* right FULL, left MASTER */

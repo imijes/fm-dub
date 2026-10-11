@@ -1029,7 +1029,7 @@ static void ui_draw(void)
         return;
     }
 #ifdef ENABLE_DUB_PREAMP
-    if (dub_ui.on && (ui.page != dub_ui.page || ui.home != dub_ui.home))
+    if (dub_ui.on && !dub_ui.lock && (ui.page != dub_ui.page || ui.home != dub_ui.home))
         dub_tower_close();                              /* another page was opened: the tower makes way */
     if (dub_ui.on) {                                    /* the dub preamp's CONTROL TOWER (dub_ui_dashboard.c) */
         dub_tower_draw(ui.force || !dub_ui.shown);

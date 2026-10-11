@@ -115,10 +115,10 @@ static void settings_init(void)
 {
     if (settings.magic != SETTINGS_MAGIC || settings.palette >= NPALETTES) {
         settings.magic = SETTINGS_MAGIC;
-        settings.palette = 4;                  /* MONO (default) */
+        settings.palette = PALETTE_DEFAULT;    /* MONO (the dub preamp: ROOTS DARK) */
         settings.lowcut = 0;
         settings.zoom = 0;                     /* large readout of the touched value: off */
     }
     palette_set(settings.palette);
-    fx_lowcut = (uint8_t)(settings.lowcut != 0);
+    fx_lowcut = LOWCUT_MODE(settings.lowcut);
 }

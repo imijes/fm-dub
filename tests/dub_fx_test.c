@@ -16,7 +16,11 @@
  *               and loops it, the dry out
  *   MIDI        the preamp's channel only; kills and punch slots in dub_live at once; the knobs and switches through
  *               the queue into dub_ctl (CC 7, 20, 21, 22, 23, 50..53); CC 45 crashes; another channel is SLOOP's
- *   intercept   BYPASS + no USB: the mix bit for bit; the USB audio summed (and with BYPASS); fader 0: the mix */
+ *   intercept   BYPASS + no USB: the mix bit for bit; the USB audio summed (and with BYPASS); fader 0: the mix
+ *   speaker EQ  Phase 5 (fx.c master_out): BASS+ sample for sample Felucca 1.0.2's (Hortator's text, below); FLAT
+ *               passes a 40 Hz tone, LOW CUT and BASS+ take it down, 1 kHz through all three; BASS+ adds the bass's
+ *               harmonics (a 60 Hz tone: 180 Hz comes up); silence after: still, within upstream's offset bound;
+ *               the modes 0 / 1 / 2 (FLAT / LOW CUT / BASS+) */
 #include <stdint.h>
 #define FELUCCA_UAC 1
 #define ENABLE_DUB_PREAMP
@@ -33,22 +37,28 @@ static void check(const char *what, int ok)
     fails += !ok;
 }
 
-/* ---- helpers: the space block on a mono input (L = R), the wet part out (the dry is passed through, 1.0) */
+/* ---- helpers: the space block on a mono input (L = R) and SLOOP's sends (snd_d / snd_r, 0 when none): out = the
+ * bus (the dry passed through, 1.0, or the throw's fade) + the post buffer (the siren, the echo and spring's return) */
 #define SR 44100
+static const int32_t *snd_d, *snd_r;
 static void space_run(const int32_t *in, int32_t *out_l, int32_t *out_r, uint32_t n)
 {
+    static const int32_t zero[CTL];
     uint32_t k, i;
     for (k = 0; k < n; k += CTL) {
-        int32_t l[CTL], r[CTL];
+        int32_t l[CTL], r[CTL], pl[CTL], pr[CTL], sd[CTL], sr[CTL];
         uint32_t m = n - k < CTL ? n - k : CTL;
-        for (i = 0; i < m; i++)
+        for (i = 0; i < m; i++) {
             l[i] = r[i] = in ? in[k + i] : 0;
-        dub_space_block(l, r, m);
+            sd[i] = snd_d ? snd_d[k + i] : 0;
+            sr[i] = snd_r ? snd_r[k + i] : 0;
+        }
+        dub_space_block(l, r, 0, 0, snd_d ? sd : zero, snd_r ? sr : zero, pl, pr, m);
         for (i = 0; i < m; i++) {
             if (out_l)
-                out_l[k + i] = l[i];
+                out_l[k + i] = l[i] + pl[i];
             if (out_r)
-                out_r[k + i] = r[i];
+                out_r[k + i] = r[i] + pr[i];
         }
     }
 }
@@ -76,7 +86,7 @@ static void fx_defaults(void)
     dub_ctl_defaults();
     memset(&dub_fx, 0, sizeof dub_fx);
     dub_fx.dry = 32767;
-    dub_fx.d_q8 = 8000 << 8;
+    dub_fx.g1 = dub_fx.g2 = 8000 << 12;
     dub_fx.lfsr = 0xACE1u;
     memset(dub_line_mem, 0, sizeof dub_line_mem);
     dub_fx.crash_c = dub_ctl.ev_crash;                  /* (the events already seen: no crash left over) */
@@ -84,13 +94,17 @@ static void fx_defaults(void)
     dub_fx.sev_c = dub_ctl.ev_siren;
     dub_fx.sev_l = dub_live.ev_siren;
     dub_live.punch = DUB_PX_NONE;
-    dub_ctl.echo_sync = 0;
     dub_ctl.echo_send_q15 = 32767;
-    dub_ctl.echo_ret_q15 = 32767;
-    dub_ctl.echo_fb_q12 = 0;
     dub_ctl.rev_send_q15 = 0;
     song.g[G_BPM] = 120;
+    song.g[G_DTIME] = 1;                                /* (Phase 5: SLOOP's DLY page drives the tape echo) 1/8 */
+    song.g[G_DFDBK] = 0;
+    song.g[G_DCOLOR] = 70;
+    song.g[G_DMIX] = 127;                               /* (the return: 32766) */
+    song.g[G_RSIZE] = 90;
+    song.g[G_RDAMP] = 60;
     song.playing = 0;
+    snd_d = snd_r = 0;
 }
 
 static int32_t buf_in[SR * 12], buf_l[SR * 12], buf_r[SR * 12];
@@ -134,7 +148,7 @@ static void echo(void)
     double r1, r2;
     /* the time: an impulse after 1 s of settling, the repeat 250 ms later */
     fx_defaults();
-    dub_ctl.echo_ms = 250;
+    song.g[G_DTIME] = 1;                            /* 1/8 at 120: 250 ms */
     memset(buf_in, 0, sizeof buf_in);
     buf_in[SR] = 30000;
     space_run(buf_in, buf_l, buf_r, SR * 2);
@@ -146,8 +160,7 @@ static void echo(void)
     check("echo: 250 ms lands at 11025 samples (+-3)", abs((int)at - (int)want) <= 3);
     /* a tempo division: 1/8 dotted at 120 BPM = 375 ms */
     fx_defaults();
-    dub_ctl.echo_sync = 1;
-    dub_ctl.echo_div = 6;                               /* N_DLY: 1/8 dotted */
+    song.g[G_DTIME] = 6;                                /* N_DLY: 1/8 dotted */
     space_run(buf_in, buf_l, buf_r, SR * 2);
     for (i = 0; i < SR * 2; i++)
         buf_l[i] -= buf_in[i];
@@ -157,22 +170,22 @@ static void echo(void)
     check("echo: on the tempo (1/8 dotted at 120 BPM) within 3 samples", abs((int)at - (int)want) <= 3);
     /* feedback 0.5: a 500 Hz burst, each repeat half the last */
     fx_defaults();
-    dub_ctl.echo_ms = 200;
-    dub_ctl.echo_fb_q12 = 2048;
+    song.g[G_DTIME] = 4;                                /* 8T at 120: 167 ms */
+    song.g[G_DFDBK] = 50;                               /* 0.5 */
     memset(buf_in, 0, sizeof buf_in);
     for (i = SR; i < SR + 2205; i++)
         buf_in[i] = (int32_t)(16000 * sin(2 * M_PI * 500 * i / SR));
     space_run(buf_in, buf_l, buf_r, SR * 3);
     for (i = 0; i < SR * 3; i++)
         buf_l[i] -= buf_in[i];
-    r1 = rms(buf_l, SR + 8820 + 400, SR + 8820 + 1800);
-    r2 = rms(buf_l, SR + 17640 + 400, SR + 17640 + 1800);
+    r1 = rms(buf_l, SR + dly_samples(4) + 400, SR + dly_samples(4) + 1800);
+    r2 = rms(buf_l, SR + 2 * dly_samples(4) + 400, SR + 2 * dly_samples(4) + 1800);
     printf("  feedback 0.5: repeat 1 %.0f, repeat 2 %.0f (ratio %.3f)\n", r1, r2, r2 / r1);
     check("echo: feedback 0.5 halves each repeat (0.45 .. 0.52)", r2 / r1 > 0.45 && r2 / r1 < 0.52);
     /* 1.25: runs away, bounded, still sounding after 10 s */
     fx_defaults();
-    dub_ctl.echo_ms = 300;
-    dub_ctl.echo_fb_q12 = DUB_FB_MAX;
+    song.g[G_DTIME] = 1;
+    song.g[G_DFDBK] = 125;                              /* 1.25 */
     space_run(buf_in, buf_l, buf_r, SR * 12);
     {
         int32_t pk = 0;
@@ -185,8 +198,8 @@ static void echo(void)
     }
     /* 0.9: a long tail that still ends at exactly 0 (no stuck value going round) */
     fx_defaults();
-    dub_ctl.echo_ms = 150;
-    dub_ctl.echo_fb_q12 = 3686;
+    song.g[G_DTIME] = 4;
+    song.g[G_DFDBK] = 90;
     memset(buf_in, 0, sizeof buf_in);
     for (i = SR; i < SR + 2205; i++)
         buf_in[i] = (int32_t)(16000 * sin(2 * M_PI * 500 * i / SR));
@@ -197,8 +210,8 @@ static void echo(void)
     check("echo: feedback 0.9 rings on, then dies to exactly 0", rms(buf_l, SR * 2, SR * 3) > 500 && rms(buf_l, SR * 11, SR * 12) == 0);
     /* FREEZE: a burst in, frozen: the same level 5 s later, nothing new gets in */
     fx_defaults();
-    dub_ctl.echo_ms = 300;
-    dub_ctl.echo_fb_q12 = 2458;
+    song.g[G_DTIME] = 1;
+    song.g[G_DFDBK] = 60;
     memset(buf_in, 0, sizeof buf_in);
     for (i = SR; i < SR + 4410; i++)
         buf_in[i] = (int32_t)(16000 * sin(2 * M_PI * 500 * i / SR));
@@ -218,7 +231,7 @@ static void echo(void)
     /* THROW: the dry gone, the whole bus to the echo */
     fx_defaults();
     dub_ctl.echo_send_q15 = 0;                          /* (the throw sends all whatever the send) */
-    dub_ctl.echo_ms = 250;
+    song.g[G_DTIME] = 1;                            /* 1/8 at 120: 250 ms */
     dub_live.punch = DUB_PX_ECHO_THROW;
     for (i = 0; i < SR * 2; i++)
         buf_in[i] = (int32_t)(16000 * sin(2 * M_PI * 1000 * i / SR));
@@ -234,8 +247,8 @@ static void echo(void)
         uint32_t pass;
         for (pass = 0; pass < 2u; pass++) {
             fx_defaults();
-            dub_ctl.echo_ms = 200;
-            dub_ctl.echo_fb_q12 = 3276;                 /* 0.8 */
+            song.g[G_DTIME] = 4;
+            song.g[G_DFDBK] = 80;                       /* 0.8 */
             dub_ctl.echo_to_rev = (uint8_t)pass;
             memset(buf_in, 0, sizeof buf_in);
             for (i = SR; i < SR + 2205; i++)
@@ -244,16 +257,16 @@ static void echo(void)
             for (i = 0; i < SR * 3; i++)
                 buf_l[i] -= buf_in[i];
             if (pass)
-                on2 = goertzel(buf_l, SR + 17640 + 400, SR + 17640 + 1800, 500);
+                on2 = goertzel(buf_l, SR + 2 * dly_samples(4) + 400, SR + 2 * dly_samples(4) + 1800, 500);
             else
-                off2 = goertzel(buf_l, SR + 17640 + 400, SR + 17640 + 1800, 500);
+                off2 = goertzel(buf_l, SR + 2 * dly_samples(4) + 400, SR + 2 * dly_samples(4) + 1800, 500);
         }
         printf("  ECHO>REV: repeat 2 at 500 Hz: %.0f off, %.0f on\n", off2, on2);
         check("echo: ECHO>REV: the second repeat is gone from the line (< 10 %)", on2 < off2 * 0.1);
     }
     /* no aliasing: 15 kHz in, nothing comes back */
     fx_defaults();
-    dub_ctl.echo_ms = 100;
+    song.g[G_DTIME] = 2;                            /* 1/16: 125 ms */
     for (i = 0; i < SR * 2; i++)
         buf_in[i] = (int32_t)(16000 * sin(2 * M_PI * 15000 * i / SR));
     space_run(buf_in, buf_l, NULL, SR * 2);
@@ -264,7 +277,7 @@ static void echo(void)
     check("echo: 15 kHz does not fold back (< -50 dB)", r1 < 16000 / M_SQRT2 * 0.00316);
     /* no image: a 3 kHz repeat, nothing at 22050 - 3000 */
     fx_defaults();
-    dub_ctl.echo_ms = 100;
+    song.g[G_DTIME] = 2;                            /* 1/16: 125 ms */
     for (i = 0; i < SR * 2; i++)
         buf_in[i] = (int32_t)(16000 * sin(2 * M_PI * 3000 * i / SR));
     space_run(buf_in, buf_l, NULL, SR * 2);
@@ -284,8 +297,8 @@ static void spring(void)
     double early, late;
     fx_defaults();
     dub_ctl.echo_send_q15 = 0;
-    dub_ctl.echo_ret_q15 = 0;
-    dub_ctl.rev_decay_q15 = 26214;                      /* 0.8 */
+    song.g[G_DMIX] = 0;                              /* (no echo return) */
+    song.g[G_RSIZE] = 89;                               /* REV SIZE: a loop gain of 0.8 */
     memset(buf_in, 0, sizeof buf_in);
     space_run(buf_in, buf_l, NULL, SR / 2);
     dub_ev_post(&dub_ctl.ev_crash);
@@ -314,7 +327,7 @@ static void siren(void)
     double on, off;
     fx_defaults();
     dub_ctl.echo_send_q15 = 0;
-    dub_ctl.echo_ret_q15 = 0;
+    song.g[G_DMIX] = 0;                              /* (no echo return) */
     dub_ctl.siren_note_q8 = 69 << 8;                    /* A4 */
     dub_ctl.siren_depth_q8 = 0;
     dub_ctl.siren_lvl_q15 = 16384;
@@ -407,7 +420,7 @@ static void midi(void)
     dub_mq_apply();
     check("MIDI: CC 7 USB fader, 20 big knob (64 -> step 5, in), 21 drive x8, 22 feedback 1.25, 23 siren C1",
           dub_ctl.usb_in_q15 == 32767 && dub_ctl.tubby_step == 5 && dub_ctl.tubby_on && dub_ctl.drive_q12 == DUB_DRIVE_MAX &&
-          dub_ctl.echo_fb_q12 == DUB_FB_MAX && dub_ctl.siren_note_q8 == 24 << 8);
+          song.g[G_DFDBK] == 125 && dub_ctl.siren_note_q8 == 24 << 8);
     check("MIDI: CC 50..53 ECHO>REV, BYPASS, SIREN CLK, SUB BLOOM on",
           dub_ctl.echo_to_rev && dub_ctl.bypass && dub_ctl.siren_sync && dub_ctl.sub_arm);
     dub_midi_take(CC(11, 51, 0));
@@ -422,22 +435,205 @@ static void midi(void)
 }
 
 /* ------------------------------------------------------------ mixer intercept --- */
+/* ------------------------------------------------------------ Phase 5: SLOOP's delay and reverb --- */
+static int32_t snd_a[SR * 4], snd_b[SR * 4];
+static void phase5(void)
+{
+    uint32_t i, at, want;
+    double rv;
+    /* a delay send alone (the bus silent, the preamp's send at 0): its echo at the DLY page's TIME */
+    fx_defaults();
+    dub_ctl.echo_send_q15 = 0;
+    memset(snd_a, 0, sizeof snd_a);
+    snd_a[SR] = 30000;
+    snd_d = snd_a;
+    space_run(NULL, buf_l, NULL, SR * 2);
+    at = argmax_abs(buf_l, SR + 100, SR * 2);
+    want = SR + dly_samples(1);
+    printf("  a track's DLY send (1/8 at 120): the echo at +%u (want %u)\n", at - SR, want - SR);
+    check("sends: SLOOP's delay send alone echoes at the DLY page's TIME (+-3)", abs((int)at - (int)want) <= 3 &&
+          abs(buf_l[at]) > 3000);                       /* (one sample, through the two 7.5 kHz filters) */
+    snd_d = 0;
+    /* a reverb send alone: the spring rings */
+    fx_defaults();
+    dub_ctl.echo_send_q15 = 0;
+    memset(snd_b, 0, sizeof snd_b);
+    for (i = SR / 2; i < SR / 2 + 2205; i++)
+        snd_b[i] = (int32_t)(16000 * sin(2 * M_PI * 400 * i / SR));
+    snd_r = snd_b;
+    space_run(NULL, buf_l, NULL, SR * 2);
+    rv = rms(buf_l, SR / 2 + 2205 + 200, SR / 2 + 2205 + 4410);
+    printf("  a track's REV send alone: the spring's tail after it %.0f\n", rv);
+    check("sends: SLOOP's reverb send alone rings the spring", rv > 300);
+    snd_r = 0;
+    /* the tape motor: TIME 1/8 -> 1/4 at 120 (250 -> 500 ms): the length glides there in ~400 ms */
+    {
+        int32_t from, to, g100 = 0, g400 = 0, g1500 = 0;
+        fx_defaults();
+        song.g[G_DTIME] = 1;
+        space_run(NULL, NULL, NULL, SR * 2);
+        from = dub_fx.g2;
+        song.g[G_DTIME] = 0;
+        for (i = 0; i < 1500u; i++) {                   /* ms by ms */
+            space_run(NULL, NULL, NULL, 44 + (i % 10u == 0u));   /* (44.1 samples a ms) */
+            if (i == 99u) g100 = dub_fx.g2;
+            if (i == 399u) g400 = dub_fx.g2;
+        }
+        g1500 = dub_fx.g2;
+        to = (int32_t)(dly_samples(0) * 128u - DUB_ECHO_LAT) << 4;
+        printf("  tape motor 250 -> 500 ms: %.0f %% after 100 ms, %.0f %% after 400 ms, %s at 1.5 s\n",
+               100.0 * (g100 - from) / (to - from), 100.0 * (g400 - from) / (to - from), g1500 == to ? "exact" : "short");
+        check("tape motor: a new length is not a jump (< 40 % after 100 ms)", g100 - from < (to - from) * 2 / 5);
+        check("tape motor: ~400 ms to get there (> 85 % at 400 ms), exactly there at 1.5 s",
+              g400 - from > (to - from) * 85 / 100 && g1500 == to);
+    }
+    /* STUTTER while the tempo moves (120 -> 100 BPM): the loop's length glides to the new sixteenth */
+    {
+        int32_t w0, w1, step = 0, prev;
+        fx_defaults();
+        for (i = 0; i < SR * 2; i++)
+            buf_in[i] = (int32_t)(10000 * sin(2 * M_PI * 220 * i / SR));
+        dub_live.punch = DUB_PX_STUTTER;
+        space_run(buf_in, NULL, NULL, SR / 2);
+        w0 = dub_fx.g2;
+        song.g[G_BPM] = 100;
+        prev = dub_fx.g2;
+        for (i = 0; i < 1000u; i++) {
+            space_run(buf_in, NULL, NULL, 44);
+            if (abs(dub_fx.g2 - prev) > step)
+                step = abs(dub_fx.g2 - prev);
+            prev = dub_fx.g2;
+        }
+        w1 = (int32_t)((dly_samples(2) / 2u) << 12);
+        printf("  STUTTER, 120 -> 100 BPM: the loop %d -> %d samples (want %d), the largest move a ms %.2f samples\n",
+               w0 >> 12, dub_fx.g2 >> 12, w1 >> 12, step / 4096.0);
+        check("STUTTER: the loop's length follows the tempo through the tape motor (no jump: < 50 samples a ms)",
+              dub_fx.g2 == w1 && step < 50 * 4096);
+        dub_live.punch = DUB_PX_NONE;
+        song.g[G_BPM] = 120;
+    }
+}
+
+static const int32_t zs[CTL];                           /* (no delay / reverb sends) */
+/* the whole intercept: BYPASS keeps SLOOP's delay; the echoes and the siren pass the kills; MUTE 5 / SOLO 5 */
+static void routing(void)
+{
+    int32_t ml[CTL], mr[CTL], sd[CTL];
+    uint32_t b, i, at = 0;
+    int32_t pk = 0;
+    double music, siren;
+    fx_defaults();
+    dub_ctl.echo_send_q15 = 0;
+    dub_lim_reset();
+    dub_uac_stream(0);
+    dub_ctl.bypass = 1;
+    dub_chain.w = 0;
+    for (b = 0; b < 2u * SR / CTL; b++) {               /* BYPASS: a delay send's echo still comes (the tape echo is */
+        for (i = 0; i < CTL; i++)                       /* SLOOP's delay now); the motor settled first (1.1 s) */
+            ml[i] = mr[i] = 0, sd[i] = b == 1500u && i == 0u ? 30000 : 0;
+        dub_mix_intercept(ml, mr, sd, zs, CTL);
+        for (i = 0; i < CTL; i++)
+            if (abs(ml[i]) > pk)
+                pk = abs(ml[i]), at = b * CTL + i;
+    }
+    printf("  BYPASS, a delay send at %u: the echo at %u (peak %d)\n", 1500u * CTL, at, pk);
+    check("BYPASS keeps SLOOP's delay: the send's echo comes, a 1/8 later (+ the look-ahead)",
+          pk > 3000 && abs((int)at - (int)(1500u * CTL + dly_samples(1) + 8u)) <= 4);
+    /* all four bands killed, the siren on, a loud bass: the bass gone, the siren (after the kills) heard */
+    fx_defaults();
+    dub_ctl.echo_send_q15 = 0;
+    dub_ctl.bypass = 0;
+    dub_chain.w = 32767;
+    dub_ctl.kill = DUB_KILL_ALL;
+    dub_ctl.siren_gate = 1;
+    dub_ctl.siren_note_q8 = 81 << 8;                    /* 880 Hz */
+    dub_ctl.siren_depth_q8 = 0;
+    music = siren = 0;
+    for (b = 0; b < SR / CTL; b++) {
+        static int32_t keep[SR];
+        for (i = 0; i < CTL; i++)
+            ml[i] = mr[i] = (int32_t)lrint(12000 * sin(2 * M_PI * 110 * (b * CTL + i) / SR));
+        dub_mix_intercept(ml, mr, zs, zs, CTL);
+        for (i = 0; i < CTL; i++)
+            keep[b * CTL + i] = ml[i];
+        if (b == SR / CTL - 1u) {
+            music = goertzel(keep, SR / 2, SR / CTL * CTL, 110);
+            siren = goertzel(keep, SR / 2, SR / CTL * CTL, 880);
+        }
+    }
+    printf("  all killed + the siren: the bass %.1f, the siren %.0f\n", music, siren);
+    check("post: the four bands killed, the siren still heard (it is summed after the kills)", music < 50 && siren > 3000);
+    dub_ctl.kill = 0;
+    dub_ctl.siren_gate = 0;
+    /* MUTE 5 / SOLO 5: the USB audio as SLOOP's mute and solo */
+    {
+        int32_t u, s;
+        fx_defaults();
+        dub_ctl.echo_send_q15 = 0;
+        dub_ctl.bypass = 1;
+        dub_chain.w = 0;
+        dub_uac_stream(1);
+        dub_ctl.usb_in_q15 = 32767;
+#define RUN(nb) for (b = 0; b < (nb); b++) { uint32_t w = dub_ua_w; \
+        for (i = 0; i < 45u && dub_ua_w - dub_ua_r < DUB_UA_N - 64u; i++) \
+            dub_ua_ring[(w + i) & (DUB_UA_N - 1u)] = (uint16_t)8000 | (uint32_t)(uint16_t)8000 << 16; \
+        dub_ua_w = w + i; dub_uac.live = 1; \
+        for (i = 0; i < CTL; i++) ml[i] = mr[i] = 1000; \
+        dub_mix_intercept(ml, mr, zs, zs, CTL); }
+        RUN(200);
+        u = ml[CTL - 1];
+        check("MUTE 5 / SOLO 5 off: the mix (1000) + the USB (8000)", abs(u - 9000) < 120);
+        dub_ctl.usb_mute = 1;
+        RUN(20);
+        check("MUTE 5: the USB out (the mix alone)", abs(ml[CTL - 1] - 1000) < 20);
+        dub_ctl.usb_mute = 0;
+        dub_ctl.usb_solo = 1;
+        RUN(20);
+        check("SOLO 5: the USB alone (the SLOOP mix out)", abs(ml[CTL - 1] - 8000) < 120);
+        dub_ctl.usb_solo = 0;
+        song.solo = 1;
+        RUN(20);
+        s = ml[CTL - 1];
+        check("a SLOOP track soloed, not SOLO 5: the USB out", abs(s - 1000) < 20);
+        dub_ctl.usb_solo = 1;
+        RUN(20);
+        check("... and SOLO 5 too: both heard", abs(ml[CTL - 1] - 9000) < 120);
+        dub_ctl.usb_solo = 1;
+        dub_ctl.usb_mute = 1;
+        RUN(20);
+        check("MUTE 5 wins over SOLO 5", abs(ml[CTL - 1] - 1000) < 20);
+#undef RUN
+        song.solo = 0;
+        dub_ctl.usb_solo = dub_ctl.usb_mute = 0;
+        dub_uac_stream(0);
+    }
+}
+
 static void intercept(void)
 {
     int32_t ml[CTL], mr[CTL];
     uint32_t i, k, same = 1, sum_ok = 1, blocks;
-    dub_ctl_defaults();
+    fx_defaults();                                      /* (an empty tape: no echo of the tests above) */
+    dub_ctl.echo_send_q15 = 0;
+    dub_lim_reset();
+    memset(&dub_rd, 0, sizeof dub_rd);                  /* (the USB reader: no fade of the last stream left over) */
+    dub_rd.step = DUB_UA_STEP1;
     dub_ctl.bypass = 1;                                 /* (the chain's own tests: above, dub_xover_test.c) */
     dub_chain.w = 0;
-    dub_uac_stream(0);                                  /* no USB stream, BYPASS: the mix goes through untouched */
-    for (k = 0; k < 4u; k++) {
+    dub_uac_stream(0);                                  /* no USB stream, BYPASS: the mix goes through, the limiter's */
+    for (k = 0; k < 4u; k++) {                          /* look-ahead later (8 samples) */
         for (i = 0; i < CTL; i++)
             ml[i] = (int32_t)(i * 1000u) - 9000, mr[i] = 7000 - (int32_t)(i * 333u);
-        dub_mix_intercept(ml, mr, CTL);
-        for (i = 0; i < CTL; i++)
-            same &= ml[i] == (int32_t)(i * 1000u) - 9000 && mr[i] == 7000 - (int32_t)(i * 333u);
+        dub_mix_intercept(ml, mr, zs, zs, CTL);
+        for (i = 0; i < CTL && k; i++) {
+            uint32_t j = (i + CTL - 8u) % CTL;
+            if (same && !(ml[i] == (int32_t)(j * 1000u) - 9000 && mr[i] == 7000 - (int32_t)(j * 333u)))
+                printf("  (block %u sample %u: %d %d, want %d %d)\n", k, i, ml[i], mr[i], (int32_t)(j * 1000u) - 9000,
+                       7000 - (int32_t)(j * 333u));
+            same &= ml[i] == (int32_t)(j * 1000u) - 9000 && mr[i] == 7000 - (int32_t)(j * 333u);
+        }
     }
-    check("intercept: no USB stream, BYPASS -> the SLOOP mix bit for bit", same);
+    check("intercept: no USB stream, BYPASS -> the SLOOP mix bit for bit, 8 samples later (the limiter)", same);
     dub_uac_stream(1);                                  /* the computer plays a constant: L 8000, R -4000 */
     dub_ctl.usb_in_q15 = 32767;
     for (k = 0; k < 200u; k++) {
@@ -448,19 +644,19 @@ static void intercept(void)
         dub_uac.live = 1;
         for (i = 0; i < CTL; i++)
             ml[i] = 1000, mr[i] = 1000;
-        dub_mix_intercept(ml, mr, CTL);
+        dub_mix_intercept(ml, mr, zs, zs, CTL);
     }
     for (i = 0; i < CTL; i++)                           /* (the fader ramp settles within 1 % of unity) */
         sum_ok &= abs(ml[i] - (1000 + 8000)) <= 90 && abs(mr[i] - (1000 - 4000)) <= 90;
     check("intercept: the bus = the mix + the USB audio (fader at 1.0, BYPASS)", sum_ok);
     blocks = dub_tel.blocks;
-    dub_mix_intercept(ml, mr, CTL);
+    dub_mix_intercept(ml, mr, zs, zs, CTL);
     check("intercept: one block counted", dub_tel.blocks == blocks + 1u);
     dub_ctl.usb_in_q15 = 0;                             /* the fader down: the USB part fades to nothing */
     for (k = 0; k < 100u; k++) {
         for (i = 0; i < CTL; i++)
             ml[i] = 1000, mr[i] = 1000;
-        dub_mix_intercept(ml, mr, CTL);
+        dub_mix_intercept(ml, mr, zs, zs, CTL);
         dub_ua_r = dub_ua_w - DUB_UA_TARGET;            /* (keep the ring fed: no underrun) */
     }
     check("intercept: fader at 0 -> the mix alone", abs(ml[CTL - 1u] - 1000) <= 2 && abs(mr[CTL - 1u] - 1000) <= 2);
@@ -526,7 +722,7 @@ static void stutter(void)
     double ctl_new, live;
     fx_defaults();
     dub_ctl.echo_send_q15 = 0;                          /* (the stutter takes the bus whatever the send) */
-    dub_ctl.echo_ret_q15 = 0;
+    song.g[G_DMIX] = 0;                              /* (no echo return) */
     for (i = 0; i < SR * 3; i++)                        /* 300 Hz, then (from 1.5 s) 3 kHz */
         buf_in[i] = (int32_t)(12000 * sin(2 * M_PI * (i < SR * 3 / 2 ? 300 : 3000) * i / SR));
     space_run(buf_in, buf_l, NULL, SR);                 /* 1 s as it is */
@@ -551,6 +747,108 @@ static void stutter(void)
           live > 9000 && ctl_new < live * 0.00316);
 }
 
+/* ---- the speaker EQ (Phase 5): Felucca 1.0.2's BASS+, as DEADACTIVE/hortator's fx.c has it (its state in fx) */
+static struct { int32_t sb_lp1, sb_lp2, sb_lp3, sb_lp4, sb_env, sb_h1, sb_h2, sb_hl; } hz;
+static int32_t hortator_spk_bass(int32_t m)
+{
+    int32_t a, t, u;
+    hz.sb_lp1 += ((m - hz.sb_lp1) * 692) >> 15;
+    hz.sb_lp2 += ((hz.sb_lp1 - hz.sb_lp2) * 692) >> 15;
+    hz.sb_lp3 += ((hz.sb_lp2 - hz.sb_lp3) * 692) >> 15;
+    hz.sb_lp4 += ((hz.sb_lp3 - hz.sb_lp4) * 692) >> 15;
+    a = hz.sb_lp4 < 0 ? -hz.sb_lp4 : hz.sb_lp4;
+    if (a > hz.sb_env)
+        hz.sb_env += (a - hz.sb_env) >> 2;
+    else if (hz.sb_env > 0)
+        hz.sb_env -= (hz.sb_env >> 11) + 1;
+    t = clamp(hz.sb_lp4 * 8, -hz.sb_env, hz.sb_env);
+    hz.sb_h1 += (t - hz.sb_h1) >> 5;
+    u = t - hz.sb_h1;
+    hz.sb_h2 += (u - hz.sb_h2) >> 5;
+    u -= hz.sb_h2;
+    hz.sb_hl += (u - hz.sb_hl) >> 3;
+    return hz.sb_hl * 3;
+}
+
+/* the level of a tone (Goertzel, Q15 amplitude) at f Hz in x[0..n) */
+static double tone_at(const int32_t *x, uint32_t n, double f)
+{
+    double w = 2.0 * 3.141592653589793 * f / SR, c = 2.0 * cos(w), s1 = 0, s2 = 0, s0;
+    uint32_t i;
+    for (i = 0; i < n; i++)
+        s0 = x[i] + c * s1 - s2, s2 = s1, s1 = s0;
+    return 2.0 * sqrt(s1 * s1 + s2 * s2 - c * s1 * s2) / n;
+}
+
+/* a tone through master_out at mode m (fresh state): the last n samples of 2 s (left) */
+static void eq_run(uint32_t m, double f, int32_t amp, int32_t *out, uint32_t n)
+{
+    uint32_t i, len = 2u * SR;
+    memset(lcs, 0, sizeof lcs), memset(lce, 0, sizeof lce), memset(&spk_dac, 0, sizeof spk_dac);
+    dc_l = dc_r = dce_l = dce_r = 0;
+    lim_env = LIM_T;
+    fx_lowcut = (uint8_t)m;
+    for (i = 0; i < len; i++) {
+        int32_t l = (int32_t)(amp * sin(2.0 * 3.141592653589793 * f * i / SR)), r = l;
+        master_out(&l, &r);
+        if (i >= len - n)
+            out[i - (len - n)] = l;
+    }
+}
+
+static void speaker(void)
+{
+    static int32_t o[SR / 2];
+    uint32_t i, n = SR / 2, seed = 12345, same = 1;
+    double a40[3], a1k[3], h180[2];
+    for (i = 0; i < 200000u; i++) {                     /* BASS+: the port against Hortator's text, sample for sample */
+        int32_t x;
+        seed = seed * 1664525u + 1013904223u;
+        x = (int32_t)((seed >> 8) & 0xFFFFu) - 32768;
+        if ((i / 20000u) & 1u)
+            x = (int32_t)(30000.0 * sin(2.0 * 3.141592653589793 * 55.0 * i / SR));   /* (noise, then a bass tone) */
+        same &= spk_bass(&spk_usb, x) == hortator_spk_bass(x);
+    }
+    check("speaker EQ: BASS+ is Felucca 1.0.2's (Hortator), sample for sample (200000 samples)", same);
+    for (i = 0; i < 3u; i++) {
+        eq_run(i, 40.0, 8000, o, n);
+        a40[i] = tone_at(o, n, 40.0);
+        eq_run(i, 1000.0, 8000, o, n);
+        a1k[i] = tone_at(o, n, 1000.0);
+    }
+    printf("  40 Hz: FLAT %.0f, LOW CUT %.0f, BASS+ %.0f; 1 kHz: %.0f, %.0f, %.0f (of 8000)\n", a40[0], a40[1], a40[2],
+           a1k[0], a1k[1], a1k[2]);
+    check("speaker EQ: FLAT: 40 Hz through (> 95 %)", a40[0] > 7600.0);
+    check("speaker EQ: LOW CUT: 40 Hz down (< 30 %)", a40[1] < 2400.0);
+    check("speaker EQ: BASS+: 40 Hz down further (< LOW CUT's)", a40[2] < a40[1]);
+    check("speaker EQ: 1 kHz through all three (> 90 %)", a1k[0] > 7200.0 && a1k[1] > 7200.0 && a1k[2] > 7200.0);
+    eq_run(1, 60.0, 12000, o, n);
+    h180[0] = tone_at(o, n, 180.0);
+    eq_run(2, 60.0, 12000, o, n);
+    h180[1] = tone_at(o, n, 180.0);
+    printf("  60 Hz tone, 180 Hz: LOW CUT %.0f, BASS+ %.0f\n", h180[0], h180[1]);
+    check("speaker EQ: BASS+: a 60 Hz bass heard through its harmonics (180 Hz up > 10 x)", h180[1] > 10.0 * h180[0] + 100.0);
+    {
+        int32_t peak = 0;
+        eq_run(2, 60.0, 30000, o, n);                   /* loud, then silence: back to 0, bounded */
+        for (i = 0; i < n; i++)
+            peak = abs(o[i]) > peak ? abs(o[i]) : peak;
+        for (i = 0; i < 3u * SR; i++) {
+            int32_t l = 0, r = 0;
+            master_out(&l, &r);
+            o[i % n] = l;
+        }
+        check("speaker EQ: BASS+ loud: bounded by the output stage (<= 32767)", peak <= 32767);
+        printf("  BASS+ after 3 s of silence: %d (Felucca 1.0.2's floor-shift high-passes stop within 31 of 0)\n",
+               o[(3u * SR - 1u) % n]);
+        check("speaker EQ: BASS+: silence after it settles within its bound (|x| <= 3 x (31 + 31 + 7), < -43 dBFS)",
+              abs(o[(3u * SR - 1u) % n]) <= 207 && o[(3u * SR - 1u) % n] == o[(3u * SR - 2u) % n]);
+    }
+    check("speaker EQ: modes: 0 1 2 kept, out of range FLAT", LOWCUT_MODE(0u) == 0 && LOWCUT_MODE(1u) == 1 &&
+          LOWCUT_MODE(2u) == 2 && LOWCUT_MODE(3u) == 0 && LOWCUT_N == 3u);
+    fx_lowcut = 0;
+}
+
 int main(void)
 {
     song.g[G_BPM] = 120;
@@ -561,7 +859,10 @@ int main(void)
     midi();
     pads();
     stutter();
+    phase5();
+    routing();
     intercept();
+    speaker();
     printf(fails ? "%d FAILED\n" : "all ok\n", fails);
     return fails != 0;
 }
