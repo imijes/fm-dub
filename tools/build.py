@@ -179,6 +179,8 @@ def build_app():
         v = os.environ.get(flag)    # unset: the default in firmware/src/felucca.c
         if v in ("0", "1"):
             flags.append(f"-D{flag}={v}")
+    if os.environ.get("ENABLE_DUB_PREAMP") == "1":   # the dub preamp fork (firmware/src/dub_preamp/)
+        flags.append("-DENABLE_DUB_PREAMP")
     flags.append(f'-DFELUCCA_ID="{PRODUCT}"')
     if VERSION:
         flags.append(f'-DFELUCCA_VERSION="{VERSION}"')
