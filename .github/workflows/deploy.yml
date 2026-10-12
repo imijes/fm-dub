@@ -7,13 +7,14 @@
 #   3. the WebAssembly firmware (tools/web_emu/build_emu.sh: Emscripten in Docker) and its smoke tests
 #   4. the site (tools/web_emu/make_site.sh: the repository's layout, so every relative path resolves; then
 #      site_check.mjs fails the run on any missing reference), uploaded and deployed to Pages
+# Runs on pushes to main and to the dub preamp branch, or by hand (Actions -> Run workflow).
 # One-time setup: Settings -> Pages -> Source: "GitHub Actions". The github-pages environment deploys from the
 # default branch (main) unless another branch is allowed in Settings -> Environments -> github-pages.
 name: Deploy web console
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/dub-preamp-audio-core]
     paths: [tools/web_emu/**, firmware/**, web/fm1ota.js, web/fm1pkg.js, tests/hostsim.c, tools/*.py, .github/workflows/deploy.yml]
   workflow_dispatch:
 
