@@ -132,7 +132,7 @@ export function buildSkin(host, out) {
   power.addEventListener("click", out.power);
   dev.append(power);
 
-  const hint = (e, ctl) => { if (!keyHint[ctl]) return; const h = el("hint", "span"); h.textContent = keyHint[ctl]; e.append(h); };
+  const hint = (e, ctl) => { if (!keyHint[ctl]) return; const h = el("cap-hint", "span"); h.textContent = keyHint[ctl]; e.append(h); };
   const pointerCtl = (e, ctl) => {                      // a pointer holds it; a right click latches it (Hortator)
     e.addEventListener("pointerdown", (ev) => { if (ev.button !== 0) return; ev.preventDefault(); e.setPointerCapture?.(ev.pointerId); press(ctl, "ptr"); });
     e.addEventListener("pointerup", () => release(ctl, "ptr"));
