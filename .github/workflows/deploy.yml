@@ -53,12 +53,12 @@ jobs:
           path: |
             ~/.jieli
             ~/fw-AC79_AIoT_SDK
-          key: jieli-ac79-v1.2.1
+          key: jieli-ac79-v1.2.1-r2           # (r1 was saved empty: the toolchain step had failed)
       - name: JieLi toolchain and AC79 SDK
         id: deps
         continue-on-error: true
         run: |
-          [ -x ~/.jieli/toolchain/pi32v2/bin/clang ] || tools/get_toolchain.sh
+          [ -x ~/.jieli/toolchain/pi32v2/bin/clang ] || sh tools/get_toolchain.sh   # (stored 644 in git: run by sh)
           [ -f ~/fw-AC79_AIoT_SDK/cpu/wl82/tools/uboot.boot ] || git clone --depth 1 \
               --branch AC79NN_SDK_V1.2.1_2023-12-13 https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK
       - name: Firmware package (ENABLE_DUB_PREAMP=1 ./build.sh)
